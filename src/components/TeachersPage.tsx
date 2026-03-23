@@ -79,6 +79,11 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate: _onNavig
         }
     }, [escolaProfile])
 
+    const optionalTextOrNull = (value: string) => {
+        const trimmed = value.trim()
+        return trimmed.length ? trimmed : null
+    }
+
     const handleCopyInvite = (professor: Professor) => {
         const origin = window.location.origin
         const inviteLink = `${origin}/register-professor?email=${encodeURIComponent(professor.email)}`
@@ -125,41 +130,41 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate: _onNavig
 
         try {
             // Validate required fields
-            if (!formData.nome_completo || !formData.email) {
-                throw new Error('Nome e Email são obrigatórios')
+            if (!formData.nome_completo) {
+                throw new Error('Nome é obrigatório')
             }
 
             const professorData = {
                 // Pessoal
-                nome_completo: formData.nome_completo,
-                data_nascimento: formData.data_nascimento || null,
-                genero: formData.genero || null,
-                estado_civil: formData.estado_civil || null,
-                numero_bi: formData.numero_bi || null,
-                nome_pai: formData.nome_pai || null,
-                nome_mae: formData.nome_mae || null,
-                nacionalidade: formData.nacionalidade || null,
-                naturalidade: formData.naturalidade || null,
+                nome_completo: formData.nome_completo.trim(),
+                data_nascimento: optionalTextOrNull(formData.data_nascimento),
+                genero: optionalTextOrNull(formData.genero),
+                estado_civil: optionalTextOrNull(formData.estado_civil),
+                numero_bi: optionalTextOrNull(formData.numero_bi),
+                nome_pai: optionalTextOrNull(formData.nome_pai),
+                nome_mae: optionalTextOrNull(formData.nome_mae),
+                nacionalidade: optionalTextOrNull(formData.nacionalidade),
+                naturalidade: optionalTextOrNull(formData.naturalidade),
 
                 // Profissional
-                email: formData.email,
-                telefone: formData.telefone,
-                numero_agente: formData.numero_agente,
-                categoria_docente: formData.categoria_docente || null,
-                grau_academico: formData.grau_academico || null,
-                area_formacao: formData.area_formacao || null,
-                especialidade: formData.especialidade,
-                data_inicio_funcoes: formData.data_inicio_funcoes || null,
-                categoria_laboral: formData.categoria_laboral || null,
-                numero_seguranca_social: formData.numero_seguranca_social || null,
+                email: formData.email.trim(),
+                telefone: optionalTextOrNull(formData.telefone),
+                numero_agente: optionalTextOrNull(formData.numero_agente),
+                categoria_docente: optionalTextOrNull(formData.categoria_docente),
+                grau_academico: optionalTextOrNull(formData.grau_academico),
+                area_formacao: optionalTextOrNull(formData.area_formacao),
+                especialidade: optionalTextOrNull(formData.especialidade),
+                data_inicio_funcoes: optionalTextOrNull(formData.data_inicio_funcoes),
+                categoria_laboral: optionalTextOrNull(formData.categoria_laboral),
+                numero_seguranca_social: optionalTextOrNull(formData.numero_seguranca_social),
 
                 // Endereço e Bancários
-                provincia_residencia: formData.provincia_residencia || null,
-                municipio_residencia: formData.municipio_residencia || null,
-                bairro_residencia: formData.bairro_residencia || null,
-                endereco_completo: formData.endereco_completo || null,
-                iban: formData.iban || null,
-                banco: formData.banco || null,
+                provincia_residencia: optionalTextOrNull(formData.provincia_residencia),
+                municipio_residencia: optionalTextOrNull(formData.municipio_residencia),
+                bairro_residencia: optionalTextOrNull(formData.bairro_residencia),
+                endereco_completo: optionalTextOrNull(formData.endereco_completo),
+                iban: optionalTextOrNull(formData.iban),
+                banco: optionalTextOrNull(formData.banco),
             }
 
             if (editMode && selectedProfessorId) {
@@ -691,7 +696,7 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate: _onNavig
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                             <Input
-                                                label="Email *"
+                                                label="Email"
                                                 type="email"
                                                 value={formData.email}
                                                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}

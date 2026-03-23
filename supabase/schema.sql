@@ -32,7 +32,7 @@ CREATE TABLE professores (
     escola_id UUID NOT NULL REFERENCES escolas(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     nome_completo TEXT NOT NULL,
-    numero_agente TEXT NOT NULL UNIQUE,
+    numero_agente TEXT UNIQUE,
     email TEXT NOT NULL UNIQUE,
     telefone TEXT,
     especialidade TEXT,
