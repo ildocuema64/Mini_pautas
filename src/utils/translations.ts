@@ -83,6 +83,9 @@ export const translateError = (error: string): string => {
         if (error.includes('alunos_numero_processo_key') || error.includes('numero_processo')) {
             return 'Este número de processo já está em uso. Por favor, use um número diferente ou deixe o campo vazio para gerar automaticamente.'
         }
+        if (error.includes('unique_turma_periodo') || error.includes('codigo_turma')) {
+            return 'A sua escola já possui uma turma com este nome para o mesmo ano lectivo e trimestre. Por favor, escolha um nome diferente ou altere o período.'
+        }
         return 'Este valor já existe no sistema. Por favor, use um valor único.'
     }
 

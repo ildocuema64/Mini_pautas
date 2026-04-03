@@ -356,12 +356,17 @@ export const GradesPage: React.FC<GradesPageProps> = ({ searchQuery: topbarSearc
                 trimestre: trimestre
             })
 
+            // Exclude calculated components at DB level (double safety on top of client-side filter).
+            // is_calculated IS NULL is included to handle legacy records created before the column existed.
+            const calcFilter = 'is_calculated.is.null,is_calculated.eq.false'
+
             // First try with trimestre filter
             let { data, error } = await supabase
                 .from('componentes_avaliacao')
                 .select('*')
                 .eq('disciplina_id', selectedDisciplina)
                 .eq('trimestre', trimestre)
+                .or(calcFilter)
                 .order('ordem')
 
             // If no components found with trimestre filter, try without (for legacy data)
@@ -371,6 +376,7 @@ export const GradesPage: React.FC<GradesPageProps> = ({ searchQuery: topbarSearc
                     .from('componentes_avaliacao')
                     .select('*')
                     .eq('disciplina_id', selectedDisciplina)
+                    .or(calcFilter)
                     .order('ordem')
 
                 data = result.data

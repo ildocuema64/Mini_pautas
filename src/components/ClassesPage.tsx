@@ -216,10 +216,13 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
                 }
 
 
-                // Auto-generate codigo_turma (e.g., "10A-2025-T1")
+                // Auto-generate codigo_turma escopado por escola para evitar colisões
+                // entre escolas diferentes e entre turmas de nomes similares na mesma escola.
+                // Formato: "<4 chars escola>-<nome>-<ano>-T<trimestre>"
+                const escolaPrefix = escolaId.replace(/-/g, '').substring(0, 4).toUpperCase()
                 const nomeSimplificado = formData.nome.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10)
                 const anoSimplificado = formData.ano_lectivo.replace('/', '-')
-                const codigo_turma = `${nomeSimplificado}-${anoSimplificado}-T${formData.trimestre}`
+                const codigo_turma = `${escolaPrefix}-${nomeSimplificado}-${anoSimplificado}-T${formData.trimestre}`
 
                 // Create turma and get the ID back
                 const { data: newTurma, error: insertError } = await supabase
@@ -276,7 +279,22 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
             loadTurmas()
         } catch (err) {
             console.error('❌ Erro ao criar/atualizar turma:', err)
-            const errorMessage = err instanceof Error ? err.message : editMode ? 'Erro ao atualizar turma' : 'Erro ao criar turma'
+
+            // Extrair código e mensagem do PostgrestError (Supabase) ou Error genérico
+            const pgCode = (err as { code?: string }).code ?? ''
+            const pgMessage = (err as { message?: string }).message ?? ''
+
+            let errorMessage: string
+            if (pgCode === '23505' || pgMessage.includes('duplicate key') || pgMessage.includes('23505')) {
+                if (pgMessage.includes('unique_turma_periodo') || pgMessage.includes('codigo_turma')) {
+                    errorMessage = `A sua escola já possui uma turma com o nome "${formData.nome}" para o ${formData.trimestre}º trimestre do ano lectivo ${formData.ano_lectivo}. Por favor, escolha um nome diferente ou altere o período.`
+                } else {
+                    errorMessage = pgMessage || (editMode ? 'Erro ao atualizar turma' : 'Erro ao criar turma')
+                }
+            } else {
+                errorMessage = pgMessage || (err instanceof Error ? err.message : '') || (editMode ? 'Erro ao atualizar turma' : 'Erro ao criar turma')
+            }
+
             setError(translateError(errorMessage))
             // Keep modal open so user can see the error
             // setShowModal(false) - removed to keep modal open on error

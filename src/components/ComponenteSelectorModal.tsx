@@ -19,6 +19,7 @@ interface ComponenteCatalogo {
     nome: string
     peso_padrao: number
     is_calculated: boolean
+    formula_expression?: string | null
     tipo_calculo: string
 }
 
@@ -123,6 +124,8 @@ export function ComponenteSelectorModal({
 
             // Also add to componentes_avaliacao for backwards compatibility if needed
             if (turmaId) {
+                // Try to insert; if the record already exists (ON CONFLICT) do nothing —
+                // the targeted update below guarantees the calculated fields are always correct.
                 await supabase.from('componentes_avaliacao').insert({
                     disciplina_id: disciplinaId,
                     turma_id: turmaId,
@@ -131,8 +134,24 @@ export function ComponenteSelectorModal({
                     peso_percentual: componente.peso_padrao,
                     trimestre: trimestre,
                     is_calculated: componente.is_calculated,
-                    tipo_calculo: componente.tipo_calculo
-                }).onConflict('disciplina_id, codigo_componente').doNothing()
+                    formula_expression: componente.formula_expression ?? null,
+                    tipo_calculo: componente.tipo_calculo || 'trimestral'
+                }).onConflict('disciplina_id, codigo_componente, trimestre').doNothing()
+
+                // Always sync the calculated fields from the catalog in case the record
+                // already existed with stale data (e.g. is_calculated = false by DEFAULT).
+                if (componente.is_calculated) {
+                    await supabase.from('componentes_avaliacao')
+                        .update({
+                            is_calculated: true,
+                            formula_expression: componente.formula_expression ?? null,
+                            tipo_calculo: componente.tipo_calculo || 'trimestral'
+                        })
+                        .eq('disciplina_id', disciplinaId)
+                        .eq('codigo_componente', componente.codigo_componente)
+                        .eq('trimestre', trimestre)
+                        .eq('turma_id', turmaId)
+                }
             }
 
             onSelect({
@@ -205,17 +224,32 @@ export function ComponenteSelectorModal({
 
             // Also add to componentes_avaliacao for backwards compatibility
             if (turmaId) {
+                const codigoNorm = newComponent.codigo_componente.toUpperCase().trim()
                 await supabase.from('componentes_avaliacao').insert({
                     disciplina_id: disciplinaId,
                     turma_id: turmaId,
                     nome: newComponent.nome,
-                    codigo_componente: newComponent.codigo_componente.toUpperCase().trim(),
+                    codigo_componente: codigoNorm,
                     peso_percentual: peso,
                     trimestre: trimestre,
                     is_calculated: newComponent.is_calculated,
                     formula_expression: newComponent.is_calculated ? newComponent.formula_expression : null,
                     tipo_calculo: newComponent.is_calculated ? newComponent.tipo_calculo : 'trimestral'
-                }).onConflict('disciplina_id, codigo_componente').doNothing()
+                }).onConflict('disciplina_id, codigo_componente, trimestre').doNothing()
+
+                // Always sync calculated fields in case record already existed with stale data.
+                if (newComponent.is_calculated) {
+                    await supabase.from('componentes_avaliacao')
+                        .update({
+                            is_calculated: true,
+                            formula_expression: newComponent.formula_expression || null,
+                            tipo_calculo: newComponent.tipo_calculo || 'trimestral'
+                        })
+                        .eq('disciplina_id', disciplinaId)
+                        .eq('codigo_componente', codigoNorm)
+                        .eq('trimestre', trimestre)
+                        .eq('turma_id', turmaId)
+                }
             }
 
             if (data && data.length > 0) {

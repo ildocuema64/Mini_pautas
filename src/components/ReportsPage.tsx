@@ -1231,7 +1231,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
 
                         // Calculate values for TRIMESTRAL calculated components in this trimestre
                         componentesTrimestre.forEach(componente => {
-                            if (componente.is_calculated && componente.formula_expression && componente.depends_on_components) {
+                            if (componente.is_calculated && componente.formula_expression) {
                                 // Only process trimestral calculated components here
                                 if (componente.tipo_calculo === 'trimestral' || !componente.tipo_calculo) {
                                     console.log(`[DEBUG T${t}] Processing TRIMESTRAL calculated component: ${componente.codigo_componente}`, {
@@ -1241,27 +1241,44 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
                                     console.log(`[DEBUG T${t}] Available components in trimester:`, componentesTrimestre.map(c => `${c.codigo_componente} (${c.id})`))
                                     console.log(`[DEBUG T${t}] Current notasMap:`, notasMap)
 
-                                    // Build dependency values, using 0 for missing values
                                     const dependencyValues: Record<string, number> = {}
 
-                                    componente.depends_on_components.forEach((depId: string) => {
-                                        // Search in components from this trimester only
-                                        const depComponent = componentesData.find(c => c.id === depId && c.trimestre === t)
-                                        console.log(`[DEBUG T${t}] Looking for dependency ${depId}:`, depComponent?.codigo_componente)
-                                        if (depComponent) {
-                                            // Use the value if present, otherwise use 0
-                                            const value = notasMap[depComponent.codigo_componente]
-                                            if (value !== undefined) {
-                                                dependencyValues[depComponent.codigo_componente] = value
-                                                console.log(`[DEBUG T${t}] Found value for ${depComponent.codigo_componente}:`, value)
+                                    if (!componente.depends_on_components || componente.depends_on_components.length === 0) {
+                                        // Fallback: extract variable names directly from the formula expression
+                                        const formulaCodes = parseFormula(componente.formula_expression)
+                                        console.log(`[DEBUG T${t}] depends_on_components vazio — extraindo da fórmula:`, formulaCodes)
+                                        formulaCodes.forEach(code => {
+                                            const depComponent = componentesData.find(c =>
+                                                c.codigo_componente?.trim().toUpperCase() === code.trim().toUpperCase() &&
+                                                c.trimestre === t
+                                            )
+                                            if (depComponent) {
+                                                dependencyValues[code] = notasMap[depComponent.codigo_componente] ?? 0
                                             } else {
-                                                dependencyValues[depComponent.codigo_componente] = 0
-                                                console.log(`[DEBUG T${t}] Using 0 for missing dependency ${depComponent.codigo_componente}`)
+                                                dependencyValues[code] = 0
                                             }
-                                        }
-                                    })
+                                        })
+                                    } else {
+                                        // Use stored depends_on_components IDs
+                                        componente.depends_on_components.forEach((depId: string) => {
+                                            // Search in components from this trimester only
+                                            let depComponent = componentesData.find(c => c.id === depId && c.trimestre === t)
+                                            // Fallback: match by code if ID not found
+                                            if (!depComponent) {
+                                                depComponent = componentesData.find(c =>
+                                                    c.codigo_componente === depId && c.trimestre === t
+                                                )
+                                            }
+                                            console.log(`[DEBUG T${t}] Looking for dependency ${depId}:`, depComponent?.codigo_componente)
+                                            if (depComponent) {
+                                                const value = notasMap[depComponent.codigo_componente]
+                                                dependencyValues[depComponent.codigo_componente] = value !== undefined ? value : 0
+                                                console.log(`[DEBUG T${t}] Found value for ${depComponent.codigo_componente}:`, dependencyValues[depComponent.codigo_componente])
+                                            }
+                                        })
+                                    }
 
-                                    // Calculate if we have the dependency components defined (even if some values are 0)
+                                    // Calculate if we have any dependencies resolved
                                     if (Object.keys(dependencyValues).length > 0) {
                                         try {
                                             console.log(`[DEBUG T${t}] Calculating ${componente.codigo_componente} with values:`, dependencyValues)
@@ -1306,35 +1323,51 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
                             dependencies: componente.depends_on_components
                         })
 
-                        if (componente.formula_expression && componente.depends_on_components) {
-                            // Build dependency values from all trimesters
+                        if (componente.formula_expression) {
                             const dependencyValues: Record<string, number> = {}
 
-                            componente.depends_on_components.forEach((depId: string) => {
-                                // Find the dependency component (could be from any trimestre)
-                                const depComponent = componentesData.find(c => c.id === depId)
-                                console.log(`[DEBUG ANNUAL] Looking for dependency ${depId}:`, depComponent ? {
-                                    code: depComponent.codigo_componente,
-                                    trimestre: depComponent.trimestre
-                                } : 'NOT FOUND')
-
-                                if (depComponent) {
-                                    // Get the value from the appropriate trimestre
-                                    const trimestreData = trimestres[depComponent.trimestre]
-                                    if (trimestreData) {
-                                        const value = trimestreData.notas[depComponent.codigo_componente]
-                                        if (value !== undefined) {
-                                            dependencyValues[depComponent.codigo_componente] = value
-                                            console.log(`[DEBUG ANNUAL] Found value for ${depComponent.codigo_componente} from T${depComponent.trimestre}:`, value)
-                                        } else {
-                                            dependencyValues[depComponent.codigo_componente] = 0
-                                            console.log(`[DEBUG ANNUAL] Using 0 for missing dependency ${depComponent.codigo_componente}`)
-                                        }
+                            const resolveDepByCode = (code: string) => {
+                                // Search across all trimesters for the best match
+                                for (let tr = 1; tr <= 3; tr++) {
+                                    const trData = trimestres[tr]
+                                    if (trData && trData.notas[code] !== undefined) {
+                                        return trData.notas[code]
                                     }
                                 }
-                            })
+                                return undefined
+                            }
 
-                            // Calculate the annual component value
+                            if (!componente.depends_on_components || componente.depends_on_components.length === 0) {
+                                // Fallback: extract variable names directly from the formula expression
+                                const formulaCodes = parseFormula(componente.formula_expression)
+                                console.log(`[DEBUG ANNUAL] depends_on_components vazio — extraindo da fórmula:`, formulaCodes)
+                                formulaCodes.forEach(code => {
+                                    const value = resolveDepByCode(code)
+                                    dependencyValues[code] = value !== undefined ? value : 0
+                                })
+                            } else {
+                                componente.depends_on_components.forEach((depId: string) => {
+                                    let depComponent = componentesData.find(c => c.id === depId)
+                                    // Fallback: match by code if ID not found
+                                    if (!depComponent) {
+                                        depComponent = componentesData.find(c => c.codigo_componente === depId)
+                                    }
+                                    console.log(`[DEBUG ANNUAL] Looking for dependency ${depId}:`, depComponent ? {
+                                        code: depComponent.codigo_componente,
+                                        trimestre: depComponent.trimestre
+                                    } : 'NOT FOUND')
+
+                                    if (depComponent) {
+                                        const trimestreData = trimestres[depComponent.trimestre]
+                                        if (trimestreData) {
+                                            const value = trimestreData.notas[depComponent.codigo_componente]
+                                            dependencyValues[depComponent.codigo_componente] = value !== undefined ? value : 0
+                                            console.log(`[DEBUG ANNUAL] Found value for ${depComponent.codigo_componente} from T${depComponent.trimestre}:`, dependencyValues[depComponent.codigo_componente])
+                                        }
+                                    }
+                                })
+                            }
+
                             if (Object.keys(dependencyValues).length > 0) {
                                 try {
                                     console.log(`[DEBUG ANNUAL] Calculating ${componente.codigo_componente} with values:`, dependencyValues)
@@ -1343,7 +1376,6 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
                                     console.log(`[DEBUG ANNUAL] Calculated value for ${componente.codigo_componente}:`, roundedValue)
 
                                     // Store the annual component value in the trimestre it belongs to
-                                    // (for display purposes in the table)
                                     if (trimestres[componente.trimestre]) {
                                         trimestres[componente.trimestre].notas[componente.codigo_componente] = roundedValue
                                     }
