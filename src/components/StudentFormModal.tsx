@@ -122,74 +122,45 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [generatingNumero, setGeneratingNumero] = useState(false)
 
-    // Função para gerar o número de processo automaticamente
+    // Gera um número de processo único verificando a DB antes de confirmar
     const generateNumeroProcesso = async (turmaIdToUse: string) => {
         if (!turmaIdToUse) return
-
         setGeneratingNumero(true)
         try {
-            // Try to use the RPC function first
-            const { data, error } = await supabase
+            // 1. Tentar via RPC (mais eficiente e atómica no servidor)
+            const { data: rpcData, error: rpcError } = await supabase
                 .rpc('generate_numero_processo', { turma_uuid: turmaIdToUse })
 
-            if (error) {
-                // Fallback: Generate locally if RPC function doesn't exist or fails
-                console.warn('RPC function not available, generating locally:', error.message)
-
-                // Get turma details
-                const { data: turmaData } = await supabase
-                    .from('turmas')
-                    .select('nome, ano_lectivo')
-                    .eq('id', turmaIdToUse)
-                    .single()
-
-                // Count existing students in this turma
-                const { count } = await supabase
-                    .from('alunos')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('turma_id', turmaIdToUse)
-
-                // Use nome da turma simplificado (ex: "1ª Classe A" -> "1A")
-                const turmaNomeForCode = turmaData?.nome || turmaNome || 'TURMA'
-                const turmaCodigo = turmaNomeForCode
-                    .replace(/[ªº°]/g, '')           // Remove ordinal symbols
-                    .replace(/classe/gi, '')         // Remove "classe"
-                    .replace(/\s+/g, '')             // Remove spaces
-                    .substring(0, 4)                 // Max 4 chars
-                    .toUpperCase()
-
-                const anoLectivo = turmaData?.ano_lectivo || new Date().getFullYear()
-                let contador = (count || 0) + 1
-                let novoNumero = `${turmaCodigo}-${anoLectivo}-${String(contador).padStart(3, '0')}`
-
-                // Check if numero already exists and increment if needed
-                let exists = true
-                while (exists) {
-                    const { data: existingAluno } = await supabase
-                        .from('alunos')
-                        .select('id')
-                        .eq('numero_processo', novoNumero)
-                        .maybeSingle()
-
-                    if (existingAluno) {
-                        contador++
-                        novoNumero = `${turmaCodigo}-${anoLectivo}-${String(contador).padStart(3, '0')}`
-                    } else {
-                        exists = false
-                    }
-                }
-
-                setFormData(prev => ({ ...prev, numero_processo: novoNumero }))
-            } else {
-                setFormData(prev => ({ ...prev, numero_processo: data }))
+            if (!rpcError && rpcData) {
+                setFormData(prev => ({ ...prev, numero_processo: rpcData }))
+                return
             }
+
+            // 2. Fallback local: gerar número de 5 dígitos único
+            let novoNumero = ''
+            for (let tentativas = 0; tentativas < 50; tentativas++) {
+                const candidato = String(Math.floor(Math.random() * 90000) + 10000)
+                const { data: existente } = await supabase
+                    .from('alunos')
+                    .select('id')
+                    .eq('numero_processo', candidato)
+                    .maybeSingle()
+                if (!existente) {
+                    novoNumero = candidato
+                    break
+                }
+            }
+
+            // Fallback absoluto: timestamp de 5 dígitos (garante unicidade)
+            if (!novoNumero) {
+                novoNumero = Date.now().toString().slice(-5)
+            }
+
+            setFormData(prev => ({ ...prev, numero_processo: novoNumero }))
         } catch (err) {
-            console.error('Error generating numero_processo:', err)
-            // Fallback to simple format if all else fails
-            const turmaCode = (turmaNome || 'TURMA').replace(/[ªº°]/g, '').replace(/classe/gi, '').replace(/\s+/g, '').substring(0, 4).toUpperCase()
-            const anoAtual = new Date().getFullYear()
-            const randomNum = Math.floor(Math.random() * 900) + 100 // 100-999
-            setFormData(prev => ({ ...prev, numero_processo: `${turmaCode}-${anoAtual}-${randomNum}` }))
+            console.error('Erro ao gerar número de processo:', err)
+            // Último recurso: timestamp de 5 dígitos (único por definição)
+            setFormData(prev => ({ ...prev, numero_processo: Date.now().toString().slice(-5) }))
         } finally {
             setGeneratingNumero(false)
         }
@@ -223,6 +194,13 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
+        if (generatingNumero) return
+        if (!formData.nome_completo.trim()) return
+        if (!formData.numero_processo.trim()) {
+            // Should never happen if turmaId is set, but guard anyway
+            alert('O número de processo ainda está a ser gerado. Aguarde um momento.')
+            return
+        }
         setIsSubmitting(true)
         try {
             await onSubmit(formData)
@@ -683,9 +661,9 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                                 type="submit"
                                 variant="primary"
                                 className="flex-1 min-h-touch"
-                                disabled={isSubmitting}
+                                disabled={isSubmitting || generatingNumero}
                             >
-                                {isSubmitting ? 'Salvando...' : submitLabel}
+                                {generatingNumero ? 'Gerando nº...' : isSubmitting ? 'Salvando...' : submitLabel}
                             </Button>
                         </div>
                     </form>

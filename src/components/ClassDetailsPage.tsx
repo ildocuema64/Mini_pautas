@@ -15,6 +15,8 @@ import { Icons } from './ui/Icons'
 import { translateError } from '../utils/translations'
 import { StudentFormModal, StudentFormData, initialStudentFormData } from './StudentFormModal'
 import { useAuth } from '../contexts/AuthContext'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 interface ClassDetailsPageProps {
     turmaId: string
@@ -85,6 +87,38 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
     const [newCapacity, setNewCapacity] = useState<number>(40)
     const [savingCapacity, setSavingCapacity] = useState(false)
 
+    // Export state
+    const [exporting, setExporting] = useState(false)
+
+    // Print config modal state
+    const [showPrintConfigModal, setShowPrintConfigModal] = useState(false)
+    const [printConfig, setPrintConfig] = useState({
+        escolaEstatal: false,
+        nivelEscola: '' as 'primario' | 'ii_ciclo' | '',
+        nomeEscola: '',
+        enderecoEscola: '',
+        municipio: '',
+        provincia: '',
+        nomeDirPedagogico: '',
+        nomeDirEscola: '',
+        logoData: '' as string,
+        logoType: 'PNG' as 'PNG' | 'JPEG',
+    })
+
+    const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        const isPng = file.type === 'image/png'
+        const isJpeg = file.type === 'image/jpeg'
+        if (!isPng && !isJpeg) return
+        const reader = new FileReader()
+        reader.onload = (ev) => {
+            const result = ev.target?.result as string
+            setPrintConfig(c => ({ ...c, logoData: result, logoType: isPng ? 'PNG' : 'JPEG' }))
+        }
+        reader.readAsDataURL(file)
+    }
+
     useEffect(() => {
         loadTurmaDetails()
     }, [turmaId])
@@ -126,6 +160,182 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
         }
     }
 
+    const handlePrintStudentList = () => {
+        if (!turma || students.length === 0) return
+        setShowPrintConfigModal(true)
+    }
+
+    const handleGeneratePDF = () => {
+        if (!turma || students.length === 0) return
+        setShowPrintConfigModal(false)
+        setExporting(true)
+        try {
+            const doc = new jsPDF()
+            const turmaNome = turma.nome
+            const anoLectivo = turma.ano_lectivo || ''
+            const date = new Date().toLocaleDateString('pt-AO')
+            const pageWidth = doc.internal.pageSize.getWidth()
+            let y = 15
+
+            // Logo + School header
+            const hasLogo = !!printConfig.logoData
+            const logoSize = 24
+            const logoX = 14
+            const textX = hasLogo ? logoX + logoSize + 5 : pageWidth / 2
+            const textAlign = hasLogo ? 'left' : 'center'
+
+            if (hasLogo) {
+                doc.addImage(printConfig.logoData, printConfig.logoType, logoX, y - 2, logoSize, logoSize)
+            }
+
+            if (printConfig.escolaEstatal) {
+                // State school header hierarchy
+                doc.setFontSize(11)
+                doc.setFont('helvetica', 'bold')
+                doc.text('REPÚBLICA DE ANGOLA', textX, y, { align: textAlign })
+                y += 6
+
+                // Governo Provincial — always for state schools
+                if (printConfig.provincia) {
+                    doc.setFontSize(9)
+                    doc.setFont('helvetica', 'normal')
+                    doc.text(`Governo Provincial de ${printConfig.provincia}`, textX, y, { align: textAlign })
+                    y += 5
+                }
+
+                if (printConfig.nivelEscola === 'primario') {
+                    if (printConfig.municipio) {
+                        doc.setFontSize(9)
+                        doc.setFont('helvetica', 'normal')
+                        doc.text(`Administração Municipal de ${printConfig.municipio}`, textX, y, { align: textAlign })
+                        y += 5
+                    }
+                } else if (printConfig.nivelEscola === 'ii_ciclo') {
+                    if (printConfig.provincia) {
+                        doc.setFontSize(9)
+                        doc.setFont('helvetica', 'normal')
+                        doc.text(`Direcção Provincial de Educação de ${printConfig.provincia}`, textX, y, { align: textAlign })
+                        y += 5
+                    }
+                }
+
+                if (printConfig.nomeEscola) {
+                    doc.setFontSize(12)
+                    doc.setFont('helvetica', 'bold')
+                    doc.text(printConfig.nomeEscola, textX, y, { align: textAlign })
+                    y += 6
+                }
+            } else {
+                // Private / other school header
+                if (printConfig.nomeEscola) {
+                    doc.setFontSize(14)
+                    doc.setFont('helvetica', 'bold')
+                    doc.text(printConfig.nomeEscola.toUpperCase(), textX, y, { align: textAlign })
+                    y += 7
+                }
+                if (printConfig.enderecoEscola) {
+                    doc.setFontSize(9)
+                    doc.setFont('helvetica', 'normal')
+                    doc.text(printConfig.enderecoEscola, textX, y, { align: textAlign })
+                    y += 5
+                }
+                if (printConfig.municipio || printConfig.provincia) {
+                    doc.setFontSize(9)
+                    doc.setFont('helvetica', 'normal')
+                    const localidade = [printConfig.municipio, printConfig.provincia].filter(Boolean).join(' — ')
+                    doc.text(localidade, textX, y, { align: textAlign })
+                    y += 5
+                }
+            }
+
+            // Ensure y clears the logo if it's taller than the text block
+            if (hasLogo) {
+                y = Math.max(y, 15 + logoSize + 3)
+            }
+
+            // Divider
+            const hasHeader = !!(printConfig.nomeEscola || hasLogo || printConfig.escolaEstatal)
+            if (hasHeader) {
+                doc.setDrawColor(79, 70, 229)
+                doc.setLineWidth(0.5)
+                doc.line(14, y, pageWidth - 14, y)
+                y += 8
+            }
+
+            // Document title
+            doc.setFontSize(15)
+            doc.setFont('helvetica', 'bold')
+            doc.text('Lista de Alunos', pageWidth / 2, y, { align: 'center' })
+            y += 9
+
+            // Class info
+            doc.setFontSize(10)
+            doc.setFont('helvetica', 'normal')
+            doc.text(`Turma: ${turmaNome}`, 14, y)
+            if (anoLectivo) {
+                doc.text(`Ano Lectivo: ${anoLectivo}`, pageWidth / 2, y, { align: 'center' })
+            }
+            doc.text(`Data de emissão: ${date}`, pageWidth - 14, y, { align: 'right' })
+            y += 6
+            doc.text(`Total de alunos: ${students.length}`, 14, y)
+            y += 8
+
+            // Table
+            const tableData = students.map((aluno, index) => [
+                String(index + 1),
+                aluno.nome_completo,
+                aluno.numero_processo,
+            ])
+
+            autoTable(doc, {
+                startY: y,
+                head: [['Nº', 'Nome Completo', 'Nº de Processo']],
+                body: tableData,
+                headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
+                alternateRowStyles: { fillColor: [248, 247, 255] },
+                styles: { fontSize: 10, cellPadding: 3 },
+                columnStyles: { 0: { cellWidth: 12 }, 2: { cellWidth: 40 } },
+            })
+
+            // Signatures
+            const finalY = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY
+            const signatureY = Math.min(finalY + 20, doc.internal.pageSize.getHeight() - 45)
+
+            doc.setFontSize(9)
+            doc.setFont('helvetica', 'normal')
+            doc.setDrawColor(100, 100, 100)
+            doc.setLineWidth(0.3)
+
+            // Signature block — Director Pedagógico / Director Administrativo
+            const sig1X = 20
+            const sig1Width = 75
+            doc.line(sig1X, signatureY, sig1X + sig1Width, signatureY)
+            doc.setFont('helvetica', 'bold')
+            doc.text('Director Pedagógico / Director Administrativo', sig1X + sig1Width / 2, signatureY + 5, { align: 'center' })
+            if (printConfig.nomeDirPedagogico) {
+                doc.setFont('helvetica', 'normal')
+                doc.text(printConfig.nomeDirPedagogico, sig1X + sig1Width / 2, signatureY + 10, { align: 'center' })
+            }
+
+            // Signature block — Director da Escola
+            const sig2X = pageWidth - 20 - sig1Width
+            doc.line(sig2X, signatureY, sig2X + sig1Width, signatureY)
+            doc.setFont('helvetica', 'bold')
+            doc.text('Director da Escola', sig2X + sig1Width / 2, signatureY + 5, { align: 'center' })
+            if (printConfig.nomeDirEscola) {
+                doc.setFont('helvetica', 'normal')
+                doc.text(printConfig.nomeDirEscola, sig2X + sig1Width / 2, signatureY + 10, { align: 'center' })
+            }
+
+            const filename = `lista-alunos-${turmaNome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}_${date.replace(/\//g, '-')}.pdf`
+            doc.save(filename)
+        } catch (err) {
+            console.error('Erro ao exportar PDF:', err)
+        } finally {
+            setExporting(false)
+        }
+    }
+
     const loadStudents = async () => {
         try {
             setLoadingStudents(true)
@@ -149,6 +359,15 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
         setError(null)
         setSuccess(null)
 
+        if (!data.nome_completo?.trim()) {
+            setError('Por favor, preencha o nome completo do aluno.')
+            throw new Error('Nome completo obrigatório')
+        }
+        if (!data.numero_processo?.trim()) {
+            setError('O número de processo não foi gerado. Feche o modal e tente novamente.')
+            throw new Error('Número de processo obrigatório')
+        }
+
         try {
             // Prepare data for the alunos table (exclude account-related fields)
             const {
@@ -165,7 +384,29 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
                 ...studentData,
                 turma_id: turmaId,
                 genero: data.genero || null,
+                data_nascimento: data.data_nascimento || null,
+                tipo_documento: data.tipo_documento || null,
+                numero_documento: data.numero_documento || null,
+                nome_pai: data.nome_pai || null,
+                nome_mae: data.nome_mae || null,
+                nome_encarregado: data.nome_encarregado || null,
+                parentesco_encarregado: data.parentesco_encarregado || null,
+                telefone_encarregado: data.telefone_encarregado || null,
+                email_encarregado: data.email_encarregado || null,
+                profissao_encarregado: data.profissao_encarregado || null,
+                provincia: data.provincia || null,
+                municipio: data.municipio || null,
+                bairro: data.bairro || null,
+                rua: data.rua || null,
+                endereco: data.endereco || null,
+                naturalidade: data.naturalidade || null,
+                nacionalidade: data.nacionalidade || null,
+                escola_anterior: data.escola_anterior || null,
+                classe_anterior: data.classe_anterior || null,
+                observacoes_academicas: data.observacoes_academicas || null,
                 ano_ingresso: data.ano_ingresso ? parseInt(data.ano_ingresso) : null,
+                frequencia_anual: data.frequencia_anual ? parseFloat(data.frequencia_anual as string) : null,
+                tipo_exame: data.tipo_exame || null,
             }
 
             // Insert the student record
@@ -677,17 +918,34 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
                                 </div>
                             </div>
                             {students.length > 0 && (
-                                <div className="relative flex-1 sm:max-w-xs">
-                                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                    </svg>
-                                    <input
-                                        type="text"
-                                        placeholder="Pesquisar aluno..."
-                                        value={searchQuery}
-                                        onChange={(e) => setSearchQuery(e.target.value)}
-                                        className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all bg-white shadow-sm"
-                                    />
+                                <div className="flex items-center gap-2 flex-1 sm:justify-end">
+                                    <div className="relative flex-1 sm:max-w-xs">
+                                        <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                        </svg>
+                                        <input
+                                            type="text"
+                                            placeholder="Pesquisar aluno..."
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all bg-white shadow-sm"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handlePrintStudentList}
+                                        disabled={exporting}
+                                        className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm disabled:opacity-50"
+                                        title="Imprimir lista de alunos"
+                                    >
+                                        {exporting ? (
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-slate-600" />
+                                        ) : (
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                                            </svg>
+                                        )}
+                                        <span className="hidden sm:inline">{exporting ? 'Exportando...' : 'Imprimir'}</span>
+                                    </button>
                                 </div>
                             )}
                         </div>
@@ -829,6 +1087,278 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
                 turmaId={turmaId}
                 turmaNome={turma.nome}
             />
+
+            {/* Print Configuration Modal */}
+            {showPrintConfigModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center md:p-4 z-50 animate-fade-in">
+                    <Card className="w-full md:max-w-lg md:rounded-2xl rounded-t-2xl rounded-b-none md:rounded-b-2xl animate-slide-up max-h-[90vh] overflow-y-auto">
+                        <CardHeader className="border-b border-slate-100 p-5">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-indigo-500/20 flex-shrink-0">
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-900">Configurar Cabeçalho do Documento</h3>
+                                    <p className="text-sm text-slate-500 mt-0.5">Preencha os dados que aparecerão no documento impresso</p>
+                                </div>
+                            </div>
+                        </CardHeader>
+                        <CardBody className="p-5 space-y-5">
+                            {/* School Info */}
+                            <div className="space-y-4">
+                                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Dados da Escola</h4>
+
+                                {/* Logo upload */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">Logomarca da Instituição</label>
+                                    <div className="flex items-center gap-4">
+                                        {printConfig.logoData ? (
+                                            <div className="relative flex-shrink-0">
+                                                <img
+                                                    src={printConfig.logoData}
+                                                    alt="Logomarca"
+                                                    className="w-16 h-16 object-contain rounded-xl border border-slate-200 bg-white p-1 shadow-sm"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setPrintConfig(c => ({ ...c, logoData: '', logoType: 'PNG' }))}
+                                                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors shadow"
+                                                    title="Remover logomarca"
+                                                >
+                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="w-16 h-16 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex items-center justify-center flex-shrink-0">
+                                                <svg className="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                                </svg>
+                                            </div>
+                                        )}
+                                        <div className="flex-1">
+                                            <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-all shadow-sm">
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                                </svg>
+                                                {printConfig.logoData ? 'Alterar imagem' : 'Carregar logomarca'}
+                                                <input
+                                                    type="file"
+                                                    accept="image/png,image/jpeg"
+                                                    className="hidden"
+                                                    onChange={handleLogoUpload}
+                                                />
+                                            </label>
+                                            <p className="text-xs text-slate-400 mt-1.5">PNG ou JPEG · Recomendado: fundo transparente</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* School type toggle */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">Tipo de Escola</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setPrintConfig(c => ({ ...c, escolaEstatal: false, nivelEscola: '' }))}
+                                            className={`px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${!printConfig.escolaEstatal
+                                                ? 'bg-primary-600 text-white border-primary-600 shadow-md shadow-primary-500/20'
+                                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                        >
+                                            Escola Privada
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setPrintConfig(c => ({ ...c, escolaEstatal: true }))}
+                                            className={`px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${printConfig.escolaEstatal
+                                                ? 'bg-primary-600 text-white border-primary-600 shadow-md shadow-primary-500/20'
+                                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                        >
+                                            Escola Estatal
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Level selector — state schools only */}
+                                {printConfig.escolaEstatal && (
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-2">Nível de Ensino</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setPrintConfig(c => ({ ...c, nivelEscola: 'primario' }))}
+                                                className={`px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${printConfig.nivelEscola === 'primario'
+                                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-500/20'
+                                                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                            >
+                                                Ensino Primário
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPrintConfig(c => ({ ...c, nivelEscola: 'ii_ciclo' }))}
+                                                className={`px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${printConfig.nivelEscola === 'ii_ciclo'
+                                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-500/20'
+                                                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                            >
+                                                II Ciclo
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Header preview */}
+                                {(printConfig.escolaEstatal || printConfig.nomeEscola) && (
+                                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Pré-visualização do Cabeçalho</p>
+                                        <div className="text-center space-y-0.5 font-mono text-xs text-slate-700 leading-relaxed">
+                                            {printConfig.escolaEstatal && (
+                                                <p className="font-bold text-slate-900">REPÚBLICA DE ANGOLA</p>
+                                            )}
+                                            {printConfig.escolaEstatal && printConfig.provincia && (
+                                                <p>Governo Provincial de {printConfig.provincia}</p>
+                                            )}
+                                            {printConfig.escolaEstatal && printConfig.nivelEscola === 'primario' && printConfig.municipio && (
+                                                <p>Administração Municipal de {printConfig.municipio}</p>
+                                            )}
+                                            {printConfig.escolaEstatal && printConfig.nivelEscola === 'ii_ciclo' && printConfig.provincia && (
+                                                <p>Direcção Provincial de Educação de {printConfig.provincia}</p>
+                                            )}
+                                            {printConfig.nomeEscola && (
+                                                <p className={printConfig.escolaEstatal ? 'font-semibold' : 'font-bold uppercase'}>
+                                                    {printConfig.nomeEscola}
+                                                </p>
+                                            )}
+                                            {!printConfig.escolaEstatal && printConfig.enderecoEscola && (
+                                                <p className="text-slate-500">{printConfig.enderecoEscola}</p>
+                                            )}
+                                            {!printConfig.escolaEstatal && (printConfig.municipio || printConfig.provincia) && (
+                                                <p className="text-slate-500">
+                                                    {[printConfig.municipio, printConfig.provincia].filter(Boolean).join(' — ')}
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Province — shown for all state schools and private */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Província</label>
+                                    <input
+                                        type="text"
+                                        placeholder="Ex: Luanda"
+                                        value={printConfig.provincia}
+                                        onChange={(e) => setPrintConfig(c => ({ ...c, provincia: e.target.value }))}
+                                        className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                                    />
+                                </div>
+
+                                {/* Municipality — shown for Primário and private */}
+                                {(!printConfig.escolaEstatal || printConfig.nivelEscola === 'primario') && (
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                                            Município
+                                            {printConfig.escolaEstatal && <span className="ml-1 text-slate-400 font-normal">(obrigatório para Ensino Primário)</span>}
+                                        </label>
+                                        <input
+                                            type="text"
+                                            placeholder="Ex: Viana"
+                                            value={printConfig.municipio}
+                                            onChange={(e) => setPrintConfig(c => ({ ...c, municipio: e.target.value }))}
+                                            className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                                        />
+                                    </div>
+                                )}
+
+                                {/* School name */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Nome da Escola</label>
+                                    <input
+                                        type="text"
+                                        placeholder="Ex: Escola Primária do Sambizanga..."
+                                        value={printConfig.nomeEscola}
+                                        onChange={(e) => setPrintConfig(c => ({ ...c, nomeEscola: e.target.value }))}
+                                        className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                                    />
+                                </div>
+
+                                {/* Address — private only */}
+                                {!printConfig.escolaEstatal && (
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Endereço / Localização <span className="text-slate-400 font-normal">(opcional)</span></label>
+                                        <input
+                                            type="text"
+                                            placeholder="Ex: Rua Principal, nº 123"
+                                            value={printConfig.enderecoEscola}
+                                            onChange={(e) => setPrintConfig(c => ({ ...c, enderecoEscola: e.target.value }))}
+                                            className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Signatures */}
+                            <div className="space-y-3">
+                                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Assinaturas</h4>
+                                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                                    <p className="text-xs text-slate-500 mb-3">Os campos de nome são opcionais. Caso preenchidos, aparecerão abaixo da linha de assinatura.</p>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Nome do Director Pedagógico / Director Administrativo
+                                                <span className="ml-1 text-slate-400 font-normal">(opcional)</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                placeholder="Ex: João da Silva"
+                                                value={printConfig.nomeDirPedagogico}
+                                                onChange={(e) => setPrintConfig(c => ({ ...c, nomeDirPedagogico: e.target.value }))}
+                                                className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all bg-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">
+                                                Nome do Director da Escola
+                                                <span className="ml-1 text-slate-400 font-normal">(opcional)</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                placeholder="Ex: Maria Fernandes"
+                                                value={printConfig.nomeDirEscola}
+                                                onChange={(e) => setPrintConfig(c => ({ ...c, nomeDirEscola: e.target.value }))}
+                                                className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all bg-white"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex gap-3 pt-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPrintConfigModal(false)}
+                                    className="flex-1 px-4 py-2.5 text-sm font-medium text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 transition-all"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleGeneratePDF}
+                                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-primary-600 rounded-xl hover:from-indigo-700 hover:to-primary-700 transition-all shadow-md shadow-indigo-500/20"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                                    </svg>
+                                    Gerar PDF
+                                </button>
+                            </div>
+                        </CardBody>
+                    </Card>
+                </div>
+            )}
 
             {/* Delete Confirmation Modal */}
             {showDeleteConfirmModal && selectedStudent && (

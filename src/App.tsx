@@ -278,13 +278,11 @@ function App() {
             }
         }
 
-        // SECRETARIO routes - limited to students and payments
+        // SECRETARIO routes - limited to payments
         if (isSecretario) {
             switch (currentPage) {
                 case 'dashboard':
                     return <Dashboard onNavigate={handleNavigate} searchQuery={searchQuery} />
-                case 'students':
-                    return <StudentsPage searchQuery={searchQuery} />
                 case 'propinas':
                 case 'tuition':
                     return <TuitionPaymentsPage searchQuery={searchQuery} />
@@ -307,8 +305,6 @@ function App() {
                 ) : (
                     <ClassesPage onNavigate={handleNavigate} searchQuery={searchQuery} />
                 )
-            case 'students':
-                return <StudentsPage searchQuery={searchQuery} />
             case 'grades':
                 return <GradesPage searchQuery={searchQuery} />
             case 'reports':

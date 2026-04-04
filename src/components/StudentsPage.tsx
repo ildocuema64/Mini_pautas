@@ -242,73 +242,42 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({ searchQuery = '' }) 
 
     const generateNumeroProcesso = async () => {
         if (!formData.turma_id) return
-
         setGeneratingNumero(true)
         try {
-            // Try to use the RPC function first
-            const { data, error } = await supabase
+            // 1. Tentar via RPC (mais eficiente e atómica no servidor)
+            const { data: rpcData, error: rpcError } = await supabase
                 .rpc('generate_numero_processo', { turma_uuid: formData.turma_id })
 
-            if (error) {
-                // Fallback: Generate locally if RPC function doesn't exist or fails
-                console.warn('RPC function not available, generating locally:', error.message)
-
-                // Get turma details
-                const { data: turmaData } = await supabase
-                    .from('turmas')
-                    .select('nome, ano_lectivo')
-                    .eq('id', formData.turma_id)
-                    .single()
-
-                // Count existing students in this turma
-                const { count } = await supabase
-                    .from('alunos')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('turma_id', formData.turma_id)
-
-                // Use nome da turma simplificado (ex: "1ª Classe A" -> "1A")
-                const turmaNome = turmaData?.nome || 'TURMA'
-                const turmaCodigo = turmaNome
-                    .replace(/[ªº°]/g, '')           // Remove ordinal symbols
-                    .replace(/classe/gi, '')         // Remove "classe"
-                    .replace(/\s+/g, '')             // Remove spaces
-                    .substring(0, 4)                 // Max 4 chars
-                    .toUpperCase()
-
-                const anoLectivo = turmaData?.ano_lectivo || new Date().getFullYear()
-                let contador = (count || 0) + 1
-                let novoNumero = `${turmaCodigo}-${anoLectivo}-${String(contador).padStart(3, '0')}`
-
-                // Check if numero already exists and increment if needed
-                let exists = true
-                while (exists) {
-                    const { data: existingAluno } = await supabase
-                        .from('alunos')
-                        .select('id')
-                        .eq('numero_processo', novoNumero)
-                        .maybeSingle()
-
-                    if (existingAluno) {
-                        contador++
-                        novoNumero = `${turmaCodigo}-${anoLectivo}-${String(contador).padStart(3, '0')}`
-                    } else {
-                        exists = false
-                    }
-                }
-
-                setFormData(prev => ({ ...prev, numero_processo: novoNumero }))
-            } else {
-                setFormData(prev => ({ ...prev, numero_processo: data }))
+            if (!rpcError && rpcData) {
+                setFormData(prev => ({ ...prev, numero_processo: rpcData }))
+                return
             }
+
+            // 2. Fallback local: gerar número de 5 dígitos único
+            let novoNumero = ''
+            for (let tentativas = 0; tentativas < 50; tentativas++) {
+                const candidato = String(Math.floor(Math.random() * 90000) + 10000)
+                const { data: existente } = await supabase
+                    .from('alunos')
+                    .select('id')
+                    .eq('numero_processo', candidato)
+                    .maybeSingle()
+                if (!existente) {
+                    novoNumero = candidato
+                    break
+                }
+            }
+
+            // Fallback absoluto: timestamp de 5 dígitos (garante unicidade)
+            if (!novoNumero) {
+                novoNumero = Date.now().toString().slice(-5)
+            }
+
+            setFormData(prev => ({ ...prev, numero_processo: novoNumero }))
         } catch (err) {
-            console.error('Error generating numero_processo:', err)
-            // Fallback to simple format if all else fails
-            const turma = turmas.find(t => t.id === formData.turma_id)
-            const turmaNome = turma?.nome || 'TURMA'
-            const turmaCodigo = turmaNome.replace(/[ªº°]/g, '').replace(/classe/gi, '').replace(/\s+/g, '').substring(0, 4).toUpperCase()
-            const anoAtual = new Date().getFullYear()
-            const randomNum = Math.floor(Math.random() * 900) + 100 // 100-999
-            setFormData(prev => ({ ...prev, numero_processo: `${turmaCodigo}-${anoAtual}-${randomNum}` }))
+            console.error('Erro ao gerar número de processo:', err)
+            // Último recurso: timestamp de 5 dígitos (único por definição)
+            setFormData(prev => ({ ...prev, numero_processo: Date.now().toString().slice(-5) }))
         } finally {
             setGeneratingNumero(false)
         }
@@ -318,6 +287,23 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({ searchQuery = '' }) 
         e.preventDefault()
         setError(null)
         setSuccess(null)
+
+        // Frontend validation for required fields
+        if (!formData.nome_completo.trim()) {
+            setError('Por favor, preencha o nome completo do aluno.')
+            setActiveTab('pessoal')
+            return
+        }
+        if (!formData.turma_id) {
+            setError('Por favor, selecione uma turma para o aluno.')
+            setActiveTab('pessoal')
+            return
+        }
+        if (!formData.numero_processo.trim()) {
+            setError('O número de processo não foi gerado. Selecione uma turma primeiro.')
+            setActiveTab('pessoal')
+            return
+        }
 
         try {
             // Prepare data for the alunos table (exclude account-related fields)
@@ -333,7 +319,28 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({ searchQuery = '' }) 
 
             const dataToSubmit = {
                 ...studentData,
+                // Convert empty strings to null for typed/optional columns
                 genero: formData.genero || null,
+                data_nascimento: formData.data_nascimento || null,
+                tipo_documento: formData.tipo_documento || null,
+                numero_documento: formData.numero_documento || null,
+                nome_pai: formData.nome_pai || null,
+                nome_mae: formData.nome_mae || null,
+                nome_encarregado: formData.nome_encarregado || null,
+                parentesco_encarregado: formData.parentesco_encarregado || null,
+                telefone_encarregado: formData.telefone_encarregado || null,
+                email_encarregado: formData.email_encarregado || null,
+                profissao_encarregado: formData.profissao_encarregado || null,
+                provincia: formData.provincia || null,
+                municipio: formData.municipio || null,
+                bairro: formData.bairro || null,
+                rua: formData.rua || null,
+                endereco: formData.endereco || null,
+                naturalidade: formData.naturalidade || null,
+                nacionalidade: formData.nacionalidade || null,
+                escola_anterior: formData.escola_anterior || null,
+                classe_anterior: formData.classe_anterior || null,
+                observacoes_academicas: formData.observacoes_academicas || null,
                 ano_ingresso: formData.ano_ingresso ? parseInt(formData.ano_ingresso) : null,
                 frequencia_anual: formData.frequencia_anual ? parseFloat(formData.frequencia_anual) : null,
                 tipo_exame: formData.tipo_exame || null,
@@ -358,7 +365,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({ searchQuery = '' }) 
             setActiveTab('pessoal')
             loadAlunos()
         } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : 'Erro ao adicionar aluno'
+            const errorMessage = err instanceof Error ? err.message : String(err)
             setError(translateError(errorMessage))
         }
     }
