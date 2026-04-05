@@ -14,6 +14,7 @@ import { Button } from './ui/Button'
 import { Icons } from './ui/Icons'
 import { translateError } from '../utils/translations'
 import { StudentFormModal, StudentFormData, initialStudentFormData } from './StudentFormModal'
+import { DisciplinesManagement } from './DisciplinesManagement'
 import { useAuth } from '../contexts/AuthContext'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -64,11 +65,14 @@ interface Aluno {
 }
 
 export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onNavigate }) => {
-    const { isProfessor } = useAuth()
+    const { isProfessor, isEscola } = useAuth()
     const [turma, setTurma] = useState<TurmaDetails | null>(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
     const [success, setSuccess] = useState<string | null>(null)
+
+    // Disciplines management state
+    const [showDisciplinesManagement, setShowDisciplinesManagement] = useState(false)
 
     // Student management state
     const [showAddStudentModal, setShowAddStudentModal] = useState(false)
@@ -896,10 +900,39 @@ export const ClassDetailsPage: React.FC<ClassDetailsPageProps> = ({ turmaId, onN
                             </div>
                             <span className="text-sm font-bold text-slate-700 group-hover:text-rose-600">Relatório</span>
                         </button>
+
+                        {/* Disciplines Management — escola only */}
+                        {isEscola && (
+                            <button
+                                onClick={() => setShowDisciplinesManagement(prev => !prev)}
+                                className={`group p-4 border shadow-sm hover:shadow-lg rounded-2xl text-center transition-all duration-300 hover:-translate-y-1 ${showDisciplinesManagement ? 'bg-cyan-50 border-cyan-200 shadow-cyan-500/10' : 'bg-white border-slate-100 hover:shadow-cyan-500/10'}`}
+                            >
+                                <div className="w-12 h-12 mx-auto mb-3 bg-gradient-to-br from-cyan-500 to-teal-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-cyan-500/30 group-hover:scale-110 transition-transform">
+                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                                    </svg>
+                                </div>
+                                <span className="text-sm font-bold text-slate-700 group-hover:text-cyan-600">
+                                    {showDisciplinesManagement ? 'Ocultar' : 'Disciplinas'}
+                                </span>
+                            </button>
+                        )}
                     </div>
                 </CardBody>
             </Card>
 
+
+            {/* Disciplines Management - Conditionally shown for escola */}
+            {showDisciplinesManagement && isEscola && turma && (
+                <div className="animate-slide-up">
+                    <DisciplinesManagement
+                        turmaId={turmaId}
+                        turmaNome={turma.nome}
+                        nivelEnsino={turma.nivel_ensino}
+                        onClose={() => setShowDisciplinesManagement(false)}
+                    />
+                </div>
+            )}
 
             {/* Students List - Conditionally shown */}
             {showStudentsList && (

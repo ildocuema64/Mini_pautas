@@ -21,6 +21,7 @@ import { validateFormula, parseFormula, formatFormulaForDisplay } from '../utils
 interface DisciplinesManagementProps {
     turmaId: string
     turmaNome: string
+    nivelEnsino?: string
     onClose?: () => void
 }
 
@@ -53,7 +54,7 @@ interface ComponenteAvaliacao {
     tipo_calculo?: 'trimestral' | 'anual'
 }
 
-export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ turmaId, turmaNome, onClose }) => {
+export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ turmaId, turmaNome, nivelEnsino, onClose }) => {
     const [disciplinas, setDisciplinas] = useState<Disciplina[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
@@ -88,7 +89,7 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
     })
 
     // Professors state
-    const [professores, setProfessores] = useState<{ id: string, nome_completo: string }[]>([])
+    const [professores, setProfessores] = useState<{ id: string, nome_completo: string, especialidade: string | null }[]>([])
 
     // Auth context
     const { escolaProfile } = useAuth()
@@ -105,9 +106,9 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
         try {
             const { data, error } = await supabase
                 .from('professores')
-                .select('id, nome_completo')
+                .select('id, nome_completo, especialidade')
                 .eq('escola_id', escolaProfile?.id)
-                .is('ativo', true)
+                .eq('ativo', true)
                 .order('nome_completo')
 
             if (error) throw error
@@ -116,6 +117,8 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
             console.error('Erro ao carregar professores:', err)
         }
     }
+
+    const isPluridocencia = nivelEnsino === 'Ensino Secundário'
     const [componenteFormData, setComponenteFormData] = useState({
         nome: '',
         codigo_componente: '',
@@ -751,20 +754,35 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
                         </svg>
                     </div>
                     <div>
-                        <h3 className="text-xl md:text-2xl font-bold text-slate-900">Disciplinas</h3>
+                        <h3 className="text-xl md:text-2xl font-bold text-slate-900">Gestão de Disciplinas</h3>
                         <p className="text-sm text-slate-500">{turmaNome}</p>
                     </div>
                 </div>
-                {onClose && (
-                    <button
-                        onClick={onClose}
-                        className="min-h-touch min-w-touch flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all"
-                    >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                )}
+                <div className="flex items-center gap-3">
+                    {/* Docência regime badge */}
+                    {nivelEnsino && (
+                        <span className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold ${
+                            isPluridocencia
+                                ? 'bg-violet-100 text-violet-700'
+                                : 'bg-blue-100 text-blue-700'
+                        }`}>
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                            {isPluridocencia ? 'Pluridocência' : 'Monodocência'}
+                        </span>
+                    )}
+                    {onClose && (
+                        <button
+                            onClick={onClose}
+                            className="min-h-touch min-w-touch flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all"
+                        >
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Messages */}
@@ -785,6 +803,40 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
                 <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-xl flex items-center shadow-sm animate-slide-down">
                     <Icons.Check />
                     <span className="ml-2 font-medium">{success}</span>
+                </div>
+            )}
+
+            {/* Pluridocência informational banner for secondary school */}
+            {isPluridocencia && (
+                <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 flex items-start gap-3">
+                    <div className="w-8 h-8 bg-violet-100 text-violet-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p className="text-sm font-bold text-violet-800">Pluridocência — Ensino Secundário (Dec. Pres. 162/23)</p>
+                        <p className="text-xs text-violet-600 mt-0.5">
+                            Cada disciplina deve ter um professor especialista atribuído. Utilize o campo "Professor" para definir o docente de cada disciplina individualmente.
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {/* Monodocência informational banner for primary school */}
+            {nivelEnsino && !isPluridocencia && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
+                    <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p className="text-sm font-bold text-blue-800">Monodocência — Ensino Primário (Dec. Pres. 162/23)</p>
+                        <p className="text-xs text-blue-600 mt-0.5">
+                            O professor de classe leciona todas as disciplinas. As disciplinas já devem estar atribuídas ao professor responsável definido na criação da turma.
+                        </p>
+                    </div>
                 </div>
             )}
 
@@ -1171,7 +1223,7 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
                                                 <option value="" className="text-neutral-400">Selecione um professor</option>
                                                 {professores.map((prof) => (
                                                     <option key={prof.id} value={prof.id}>
-                                                        {prof.nome_completo}
+                                                        {prof.nome_completo}{prof.especialidade ? ` — ${prof.especialidade}` : ''}
                                                     </option>
                                                 ))}
                                             </select>
@@ -1283,7 +1335,7 @@ export const DisciplinesManagement: React.FC<DisciplinesManagementProps> = ({ tu
                                             <option value="">Selecione um professor</option>
                                             {professores.map((prof) => (
                                                 <option key={prof.id} value={prof.id}>
-                                                    {prof.nome_completo}
+                                                    {prof.nome_completo}{prof.especialidade ? ` — ${prof.especialidade}` : ''}
                                                 </option>
                                             ))}
                                         </select>

@@ -26,6 +26,12 @@ interface Turma {
     total_alunos?: number
 }
 
+interface ProfessorOption {
+    id: string
+    nome_completo: string
+    especialidade: string | null
+}
+
 interface ClassesPageProps {
     onNavigate?: (page: string, params?: { turmaId?: string }) => void
     searchQuery?: string
@@ -45,14 +51,19 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
         ano_lectivo: String(new Date().getFullYear()),
         trimestre: 1,
         nivel_ensino: 'Ensino Secundário',
-        classe: '', // New field for class selection
+        classe: '',
+        professor_id: '',
     })
     const [error, setError] = useState<string | null>(null)
     const [success, setSuccess] = useState<string | null>(null)
     const [submitting, setSubmitting] = useState(false)
     const [availableTemplates, setAvailableTemplates] = useState<DisciplinaTemplate[]>([])
     const [loadingTemplates, setLoadingTemplates] = useState(false)
-    const [applyTemplates, setApplyTemplates] = useState(true) // Default to apply templates
+    const [applyTemplates, setApplyTemplates] = useState(true)
+
+    // Professors list for school-managed turma creation
+    const [professores, setProfessores] = useState<ProfessorOption[]>([])
+    const [loadingProfessores, setLoadingProfessores] = useState(false)
 
     // Classes list based on nivel_ensino
     const getClassesForNivel = (nivel: string): string[] => {
@@ -66,9 +77,35 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
         }
     }
 
+    /**
+     * Determines the docência regime based on nivel_ensino and classe.
+     * Angola's education system (Decreto Presidencial 162/23 + Dec. Exec. 169/24):
+     * - Ensino Primário 1ª-4ª: monodocência pura (1 teacher for all subjects)
+     * - Ensino Primário 5ª-6ª: monodocência coadjuvada (1 main teacher, possible assistants)
+     * - Ensino Secundário 7ª-12ª: pluridocência (specialist teacher per subject)
+     */
+    const getDocenciaRegime = (nivel: string, classe: string): 'monodocencia' | 'monodocencia_coadjuvada' | 'pluridocencia' | null => {
+        if (nivel === 'Ensino Primário') {
+            const classeNum = parseInt(classe.replace(/\D/g, ''))
+            if (classeNum >= 1 && classeNum <= 4) return 'monodocencia'
+            if (classeNum >= 5 && classeNum <= 6) return 'monodocencia_coadjuvada'
+        }
+        if (nivel === 'Ensino Secundário') return 'pluridocencia'
+        return null
+    }
+
+    const regime = getDocenciaRegime(formData.nivel_ensino, formData.classe)
+
     useEffect(() => {
         loadTurmas()
     }, [])
+
+    // Load professors when escola opens the creation modal
+    useEffect(() => {
+        if (showModal && !editMode && isEscola && escolaProfile) {
+            loadProfessores()
+        }
+    }, [showModal, editMode, isEscola, escolaProfile])
 
     // Load templates when class is selected
     useEffect(() => {
@@ -78,6 +115,26 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
             setAvailableTemplates([])
         }
     }, [formData.classe, showModal, editMode])
+
+    const loadProfessores = async () => {
+        if (!escolaProfile?.id) return
+        try {
+            setLoadingProfessores(true)
+            const { data, error } = await supabase
+                .from('professores')
+                .select('id, nome_completo, especialidade')
+                .eq('escola_id', escolaProfile.id)
+                .eq('ativo', true)
+                .order('nome_completo')
+
+            if (error) throw error
+            setProfessores(data || [])
+        } catch (err) {
+            console.error('Erro ao carregar professores:', err)
+        } finally {
+            setLoadingProfessores(false)
+        }
+    }
 
     const loadTemplatesForClass = async (classe: string) => {
         if (!escolaProfile?.id) return
@@ -168,24 +225,14 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
                 let escolaId: string | null = null
 
                 if (isEscola && escolaProfile) {
-                    // Escola creating turma - need to get a professor from this escola
                     escolaId = escolaProfile.id
                     console.log('🔍 DEBUG - Escola criando turma, escola_id:', escolaId)
 
-                    // Get the first active professor of this escola
-                    const { data: firstProfessor, error: profError } = await supabase
-                        .from('professores')
-                        .select('id')
-                        .eq('escola_id', escolaId)
-                        .eq('ativo', true)
-                        .limit(1)
-                        .single()
-
-                    if (profError || !firstProfessor) {
-                        throw new Error('É necessário cadastrar pelo menos um professor antes de criar turmas.')
+                    if (!formData.professor_id) {
+                        throw new Error('É necessário seleccionar um professor responsável pela turma.')
                     }
-                    professorId = firstProfessor.id
-                    console.log('🔍 DEBUG - Professor encontrado:', professorId)
+                    professorId = formData.professor_id
+                    console.log('🔍 DEBUG - Professor seleccionado:', professorId)
                 } else if (isProfessor && professorProfile) {
                     // Professor creating turma - use their own profile
                     professorId = professorProfile.id
@@ -219,7 +266,7 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
                 // Auto-generate codigo_turma escopado por escola para evitar colisões
                 // entre escolas diferentes e entre turmas de nomes similares na mesma escola.
                 // Formato: "<4 chars escola>-<nome>-<ano>-T<trimestre>"
-                const escolaPrefix = escolaId.replace(/-/g, '').substring(0, 4).toUpperCase()
+                const escolaPrefix = (escolaId ?? '').replace(/-/g, '').substring(0, 4).toUpperCase()
                 const nomeSimplificado = formData.nome.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10)
                 const anoSimplificado = formData.ano_lectivo.replace('/', '-')
                 const codigo_turma = `${escolaPrefix}-${nomeSimplificado}-${anoSimplificado}-T${formData.trimestre}`
@@ -273,6 +320,7 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
                 trimestre: 1,
                 nivel_ensino: 'Ensino Secundário',
                 classe: '',
+                professor_id: '',
             })
             setApplyTemplates(true)
             setAvailableTemplates([])
@@ -310,10 +358,11 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
             nome: turma.nome,
             ano_lectivo: turma.ano_lectivo,
             trimestre: turma.trimestre,
-            nivel_ensino: 'Ensino Secundário', // Default since we don't store this in the Turma interface
-            classe: '', // Not editable on edit
+            nivel_ensino: 'Ensino Secundário',
+            classe: '',
+            professor_id: '',
         })
-        setApplyTemplates(false) // Don't apply templates on edit
+        setApplyTemplates(false)
         setShowModal(true)
     }
 
@@ -360,6 +409,7 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
             trimestre: 1,
             nivel_ensino: 'Ensino Secundário',
             classe: '',
+            professor_id: '',
         })
         setApplyTemplates(true)
         setAvailableTemplates([])
@@ -703,6 +753,106 @@ export const ClassesPage: React.FC<ClassesPageProps> = ({ onNavigate, searchQuer
                                             </div>
                                             <p className="text-xs text-slate-500 mt-1.5">
                                                 Seleccione a classe para aplicar disciplinas automaticamente
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {/* Docência Regime Badge */}
+                                    {!editMode && isEscola && formData.classe && regime && (
+                                        <div className={`rounded-xl p-3 border flex items-start gap-3 ${
+                                            regime === 'monodocencia'
+                                                ? 'bg-blue-50 border-blue-200'
+                                                : regime === 'monodocencia_coadjuvada'
+                                                ? 'bg-amber-50 border-amber-200'
+                                                : 'bg-violet-50 border-violet-200'
+                                        }`}>
+                                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                                regime === 'monodocencia'
+                                                    ? 'bg-blue-100 text-blue-600'
+                                                    : regime === 'monodocencia_coadjuvada'
+                                                    ? 'bg-amber-100 text-amber-600'
+                                                    : 'bg-violet-100 text-violet-600'
+                                            }`}>
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                </svg>
+                                            </div>
+                                            <div>
+                                                <p className={`text-xs font-bold uppercase tracking-wide ${
+                                                    regime === 'monodocencia' ? 'text-blue-700'
+                                                    : regime === 'monodocencia_coadjuvada' ? 'text-amber-700'
+                                                    : 'text-violet-700'
+                                                }`}>
+                                                    {regime === 'monodocencia' && 'Monodocência — Dec. Pres. 162/23'}
+                                                    {regime === 'monodocencia_coadjuvada' && 'Monodocência Coadjuvada — Dec. Exec. 169/24'}
+                                                    {regime === 'pluridocencia' && 'Pluridocência — Dec. Pres. 162/23'}
+                                                </p>
+                                                <p className={`text-xs mt-0.5 ${
+                                                    regime === 'monodocencia' ? 'text-blue-600'
+                                                    : regime === 'monodocencia_coadjuvada' ? 'text-amber-600'
+                                                    : 'text-violet-600'
+                                                }`}>
+                                                    {regime === 'monodocencia' && 'Um professor lecciona todas as disciplinas desta turma.'}
+                                                    {regime === 'monodocencia_coadjuvada' && 'Um professor titular com possibilidade de coadjuvante por disciplina (atribuição posterior).'}
+                                                    {regime === 'pluridocencia' && 'Cada disciplina terá um professor especialista. Atribua-os após criar a turma.'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Professor Selection - Only for escola creating new turma */}
+                                    {!editMode && isEscola && (
+                                        <div>
+                                            <label className="form-label block text-sm font-medium text-slate-700 mb-1.5">
+                                                {regime === 'pluridocencia'
+                                                    ? 'Director de Turma'
+                                                    : 'Professor de Classe'}
+                                                <span className="text-red-500 ml-1">*</span>
+                                            </label>
+                                            <div className="relative">
+                                                {loadingProfessores ? (
+                                                    <div className="w-full border border-slate-300 rounded-xl p-3 text-sm text-slate-400 bg-slate-50 flex items-center gap-2">
+                                                        <svg className="animate-spin h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                        </svg>
+                                                        A carregar professores...
+                                                    </div>
+                                                ) : professores.length === 0 ? (
+                                                    <div className="w-full border border-red-200 bg-red-50 rounded-xl p-3 text-sm text-red-600 flex items-center gap-2">
+                                                        <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                        </svg>
+                                                        Nenhum professor activo. Cadastre um professor primeiro.
+                                                    </div>
+                                                ) : (
+                                                    <select
+                                                        value={formData.professor_id}
+                                                        onChange={(e) => setFormData({ ...formData, professor_id: e.target.value })}
+                                                        className="w-full appearance-none bg-white border border-slate-300 text-slate-900 text-sm rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 block p-3 pr-10 shadow-sm transition-all hover:border-slate-400"
+                                                        required
+                                                    >
+                                                        <option value="">Seleccionar professor...</option>
+                                                        {professores.map(prof => (
+                                                            <option key={prof.id} value={prof.id}>
+                                                                {prof.nome_completo}
+                                                                {prof.especialidade ? ` — ${prof.especialidade}` : ''}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                )}
+                                                {professores.length > 0 && (
+                                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                        </svg>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <p className="text-xs text-slate-500 mt-1.5">
+                                                {regime === 'pluridocencia'
+                                                    ? 'O director de turma é o professor responsável administrativo. As disciplinas serão atribuídas individualmente após a criação.'
+                                                    : 'Este professor leccionará todas as disciplinas desta turma.'}
                                             </p>
                                         </div>
                                     )}
