@@ -28,7 +28,8 @@ import { ConfiguracaoCoresModal } from './ConfiguracaoCoresModal'
 import { PautaGeralPage } from './PautaGeralPage'
 import { useAuth } from '../contexts/AuthContext'
 import { TermoFrequenciaPreview } from './TermoFrequenciaPreview'
-import { generateTermoFrequenciaPDF, generateBatchTermosFrequenciaZip } from '../utils/pdfGenerator'
+import { generateTermoFrequenciaPDF, generateBatchTermosFrequenciaZip, generateMapaAproveitamentoPDF } from '../utils/pdfGenerator'
+import { MapaAproveitamentoPreview, MapaAproveitamentoData, MapaAproveitamentoTurmaData } from './MapaAproveitamentoPreview'
 
 interface Turma {
     id: string
@@ -130,7 +131,13 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
     const [showColorConfigModal, setShowColorConfigModal] = useState(false)
 
     // Tab state
-    const [activeTab, setActiveTab] = useState<'mini-pauta' | 'pauta-geral' | 'termo-frequencia'>('mini-pauta')
+    const [activeTab, setActiveTab] = useState<'mini-pauta' | 'pauta-geral' | 'termo-frequencia' | 'mapa-aproveitamento'>('mini-pauta')
+
+    // Mapa de Aproveitamento state
+    const [mapaData, setMapaData] = useState<MapaAproveitamentoData | null>(null)
+    const [mapaLoading, setMapaLoading] = useState(false)
+    const [mapaTrimestre, setMapaTrimestre] = useState<1 | 2 | 3 | 'anual'>(1)
+    const [mapaSelectedTurmas] = useState<string[]>([])
 
     // Termo de Frequência state
     const [alunos, setAlunos] = useState<Array<{ id: string, numero_processo: string, nome_completo: string }>>([])
@@ -2135,6 +2142,239 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
         }
     }
 
+    // ─── Mapa de Aproveitamento ─────────────────────────────────────────────
+    const loadMapaAproveitamento = async () => {
+        if (!selectedTurma && mapaSelectedTurmas.length === 0) {
+            setError('Seleccione pelo menos uma turma')
+            return
+        }
+
+        const turmaIds = mapaSelectedTurmas.length > 0 ? mapaSelectedTurmas : [selectedTurma]
+
+        try {
+            setMapaLoading(true)
+            setError(null)
+
+            // Load escola data
+            let escola_id: string | undefined
+            if (escolaProfile) escola_id = escolaProfile.id
+            else if (professorProfile) escola_id = professorProfile.escola_id
+            else if (secretarioProfile) escola_id = secretarioProfile.escola_id
+
+            const { data: escolaData } = escola_id
+                ? await supabase.from('escolas').select('nome, provincia, municipio, codigo_escola').eq('id', escola_id).single()
+                : { data: null }
+
+            // Load turmas info
+            const { data: turmasData, error: turmasError } = await supabase
+                .from('turmas')
+                .select('id, nome, codigo_turma, ano_lectivo, nivel_ensino, classe')
+                .in('id', turmaIds)
+
+            if (turmasError) throw turmasError
+            if (!turmasData || turmasData.length === 0) throw new Error('Turmas não encontradas')
+
+            const anoLectivo = turmasData[0].ano_lectivo
+
+            const turmasProcessadas: MapaAproveitamentoTurmaData[] = []
+
+            for (const turma of turmasData) {
+                // Load disciplinas for this turma
+                const { data: discData, error: discError } = await supabase
+                    .from('disciplinas')
+                    .select('id, nome, codigo_disciplina')
+                    .eq('turma_id', turma.id)
+                    .order('ordem')
+
+                if (discError) throw discError
+                if (!discData || discData.length === 0) continue
+
+                // Load all active students with gender
+                const { data: alunosData, error: alunosError } = await supabase
+                    .from('alunos')
+                    .select('id, genero, ativo, frequencia_anual, tipo_exame, observacao_transicao')
+                    .eq('turma_id', turma.id)
+
+                if (alunosError) throw alunosError
+
+                const todosAlunos = alunosData || []
+
+                // Load all componentes for this turma
+                const { data: compData, error: compError } = await supabase
+                    .from('componentes_avaliacao')
+                    .select('id, codigo_componente, nome, peso_percentual, trimestre, disciplina_id, is_calculated, formula_expression, depends_on_components, tipo_calculo')
+                    .eq('turma_id', turma.id)
+                    .in('disciplina_id', discData.map(d => d.id))
+
+                if (compError) throw compError
+
+                // Load notas — filter by trimestre or all
+                let notasQuery = supabase
+                    .from('notas')
+                    .select('aluno_id, componente_id, valor, trimestre')
+                    .eq('turma_id', turma.id)
+
+                if (mapaTrimestre !== 'anual') {
+                    notasQuery = notasQuery.eq('trimestre', mapaTrimestre)
+                }
+
+                const { data: notasData, error: notasError } = await notasQuery
+                if (notasError) throw notasError
+
+                // Process each disciplina
+                const disciplinasProcessadas = discData.map(disc => {
+                    const compDisciplina = (compData || []).filter(c => c.disciplina_id === disc.id)
+
+                    // Find MF or MFD component (the "nota final" component)
+                    const mfComp = compDisciplina.find(c =>
+                        c.is_calculated &&
+                        (c.codigo_componente?.toUpperCase() === 'MF' ||
+                            c.codigo_componente?.toUpperCase() === 'MFD' ||
+                            c.nome?.toUpperCase().includes('MÉDIA FINAL'))
+                    ) || compDisciplina.find(c => c.is_calculated) || compDisciplina[compDisciplina.length - 1]
+
+                    // For each student, compute their final grade for this discipline
+                    let aprovadosM = 0, aprovadosF = 0
+                    let reprovadosM = 0, reprovadosF = 0
+                    let desistentesM = 0, desistentesF = 0
+                    let transferidosM = 0, transferidosF = 0
+                    let inscritosM = 0, inscritosF = 0
+                    let frequentaramM = 0, frequentaramF = 0
+                    const notas: number[] = []
+
+                    const isPrimary = (turma.nivel_ensino || '').toLowerCase().includes('primár') ||
+                        (turma.nivel_ensino || '').toLowerCase().includes('primario')
+                    const limiar = isPrimary ? 5 : 10
+
+                    for (const aluno of todosAlunos) {
+                        const genM = aluno.genero === 'M'
+                        const genF = aluno.genero === 'F'
+
+                        // Inscritos = todos
+                        if (genM) inscritosM++
+                        else if (genF) inscritosF++
+
+                        // Desistente = inativo com frequencia_anual < 66.67 or tipo_exame=desistente
+                        const isDesistente = !aluno.ativo &&
+                            (aluno.tipo_exame === 'desistente' ||
+                                (aluno.frequencia_anual !== null && aluno.frequencia_anual < 66.67))
+                        const isTransferido = !aluno.ativo && !isDesistente
+
+                        if (isDesistente) {
+                            if (genM) desistentesM++
+                            else if (genF) desistentesF++
+                            continue
+                        }
+                        if (isTransferido) {
+                            if (genM) transferidosM++
+                            else if (genF) transferidosF++
+                            continue
+                        }
+
+                        // Active students that frequentaram
+                        if (genM) frequentaramM++
+                        else if (genF) frequentaramF++
+
+                        // Get grade for this student in this discipline
+                        const alunoNotas = (notasData || []).filter(n => n.aluno_id === aluno.id)
+                        let notaFinal: number | null = null
+
+                        if (mfComp) {
+                            const notaMF = alunoNotas.find(n => n.componente_id === mfComp.id)
+                            if (notaMF) notaFinal = notaMF.valor
+                        }
+
+                        // If no MF found, use weighted average of components for the discipline/trimestre
+                        if (notaFinal === null) {
+                            const compsTrim = mapaTrimestre !== 'anual'
+                                ? compDisciplina.filter(c => c.trimestre === mapaTrimestre && !c.is_calculated)
+                                : compDisciplina.filter(c => !c.is_calculated)
+
+                            const notasTrim = alunoNotas.filter(n => compsTrim.some(c => c.id === n.componente_id))
+                            if (notasTrim.length > 0) {
+                                const totalPeso = compsTrim.reduce((s, c) => s + (c.peso_percentual || 0), 0)
+                                if (totalPeso > 0) {
+                                    notaFinal = notasTrim.reduce((s, n) => {
+                                        const comp = compsTrim.find(c => c.id === n.componente_id)
+                                        return s + n.valor * ((comp?.peso_percentual || 0) / totalPeso)
+                                    }, 0)
+                                }
+                            }
+                        }
+
+                        if (notaFinal !== null) {
+                            notas.push(notaFinal)
+                            const aprovado = Math.round(notaFinal) >= limiar
+                            if (aprovado) {
+                                if (genM) aprovadosM++
+                                else if (genF) aprovadosF++
+                            } else {
+                                if (genM) reprovadosM++
+                                else if (genF) reprovadosF++
+                            }
+                        } else {
+                            // No grade yet — count as reprovado (incomplete)
+                            if (genM) reprovadosM++
+                            else if (genF) reprovadosF++
+                        }
+                    }
+
+                    const media = notas.length > 0 ? notas.reduce((a, b) => a + b, 0) / notas.length : null
+
+                    return {
+                        id: disc.id,
+                        nome: disc.nome,
+                        inscritos_m: inscritosM,
+                        inscritos_f: inscritosF,
+                        frequentaram_m: frequentaramM,
+                        frequentaram_f: frequentaramF,
+                        aprovados_m: aprovadosM,
+                        aprovados_f: aprovadosF,
+                        reprovados_m: reprovadosM,
+                        reprovados_f: reprovadosF,
+                        desistentes_m: desistentesM,
+                        desistentes_f: desistentesF,
+                        transferidos_m: transferidosM,
+                        transferidos_f: transferidosF,
+                        media_turma: media
+                    }
+                })
+
+                turmasProcessadas.push({
+                    turma_id: turma.id,
+                    turma_nome: turma.nome,
+                    turma_codigo: turma.codigo_turma,
+                    classe: turma.classe || turma.nome,
+                    nivel_ensino: turma.nivel_ensino || '',
+                    disciplinas: disciplinasProcessadas
+                })
+            }
+
+            setMapaData({
+                escola: escolaData || { nome: 'Escola', provincia: '', municipio: '' },
+                ano_lectivo: anoLectivo,
+                trimestre: mapaTrimestre,
+                turmas: turmasProcessadas
+            })
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Erro ao carregar mapa de aproveitamento'
+            setError(msg)
+        } finally {
+            setMapaLoading(false)
+        }
+    }
+
+    const handleGenerateMapaPDF = async () => {
+        if (!mapaData) { setError('Carregue o mapa primeiro'); return }
+        try {
+            await generateMapaAproveitamentoPDF(mapaData, headerConfig)
+            setSuccess('PDF do Mapa de Aproveitamento gerado com sucesso!')
+            setTimeout(() => setSuccess(null), 3000)
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Erro ao gerar PDF')
+        }
+    }
+
 
     return (
         <div className="space-y-4 md:space-y-6 pb-24 md:pb-6">
@@ -2192,6 +2432,21 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                                     </svg>
                                     Termo de Frequência
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('mapa-aproveitamento')}
+                                    className={`
+                                        flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 whitespace-nowrap touch-feedback min-h-touch
+                                        ${activeTab === 'mapa-aproveitamento'
+                                            ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white shadow-md shadow-emerald-500/25'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-95'
+                                        }
+                                    `}
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                    </svg>
+                                    Mapa de Aproveitamento
                                 </button>
                             </>
                         )}
@@ -2519,6 +2774,135 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ searchQuery = '' }) =>
                 </div>
             ) : activeTab === 'pauta-geral' ? (
                 <PautaGeralPage />
+            ) : activeTab === 'mapa-aproveitamento' ? (
+                // ── Mapa de Aproveitamento Tab ─────────────────────────────────────────
+                <div className="space-y-4 md:space-y-6">
+                    {error && (
+                        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
+                            <span className="text-sm">{error}</span>
+                        </div>
+                    )}
+                    {success && (
+                        <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg">
+                            <span className="text-sm">{success}</span>
+                        </div>
+                    )}
+
+                    <Card>
+                        <CardHeader>
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg flex items-center justify-center">
+                                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 className="text-base md:text-lg font-semibold text-slate-900">Mapa de Aproveitamento</h3>
+                                    <p className="text-xs text-slate-500">Estatísticas por disciplina: inscritos, frequência, aprovados, reprovados, desistentes e transferidos — por género</p>
+                                </div>
+                            </div>
+                        </CardHeader>
+                        <CardBody className="p-3 md:p-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {/* Turma selector */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Turma</label>
+                                    <select
+                                        value={selectedTurma}
+                                        onChange={e => { setSelectedTurma(e.target.value); setMapaData(null) }}
+                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    >
+                                        <option value="">Seleccionar turma...</option>
+                                        {turmas.map(t => (
+                                            <option key={t.id} value={t.id}>{t.codigo_turma} — {t.nome} ({t.ano_lectivo})</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Período */}
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Período</label>
+                                    <select
+                                        value={mapaTrimestre}
+                                        onChange={e => { setMapaTrimestre(e.target.value as any); setMapaData(null) }}
+                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                    >
+                                        <option value={1}>1º Trimestre</option>
+                                        <option value={2}>2º Trimestre</option>
+                                        <option value={3}>3º Trimestre</option>
+                                        <option value="anual">Anual</option>
+                                    </select>
+                                </div>
+
+                                {/* Generate button */}
+                                <div className="flex items-end">
+                                    <Button
+                                        onClick={loadMapaAproveitamento}
+                                        disabled={!selectedTurma || mapaLoading}
+                                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                                    >
+                                        {mapaLoading ? (
+                                            <span className="flex items-center gap-2">
+                                                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                                </svg>
+                                                A carregar...
+                                            </span>
+                                        ) : (
+                                            <span className="flex items-center gap-2">
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                                </svg>
+                                                Gerar Mapa
+                                            </span>
+                                        )}
+                                    </Button>
+                                </div>
+                            </div>
+                        </CardBody>
+                    </Card>
+
+                    {/* Preview */}
+                    {mapaData && (
+                        <>
+                            {/* Action buttons */}
+                            <div className="flex flex-wrap gap-3 justify-end">
+                                <Button
+                                    onClick={handleGenerateMapaPDF}
+                                    className="bg-red-600 hover:bg-red-700 text-white flex items-center gap-2"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    Exportar PDF
+                                </Button>
+                            </div>
+
+                            <MapaAproveitamentoPreview data={mapaData} headerConfig={headerConfig} />
+                        </>
+                    )}
+
+                    {/* Empty state */}
+                    {!mapaData && !mapaLoading && (
+                        <Card>
+                            <CardBody>
+                                <div className="text-center py-12">
+                                    <svg className="mx-auto h-12 w-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                    </svg>
+                                    <h3 className="mt-2 text-sm font-medium text-slate-900">Mapa de Aproveitamento</h3>
+                                    <p className="mt-1 text-sm text-slate-500">
+                                        Seleccione uma turma e o período, depois clique em "Gerar Mapa" para visualizar o mapa de aproveitamento escolar.
+                                    </p>
+                                    <p className="mt-2 text-xs text-slate-400">
+                                        O mapa mostra por disciplina: inscritos, frequência, aprovados, reprovados, desistentes e transferidos — desagregados por género (M/F/T).
+                                    </p>
+                                </div>
+                            </CardBody>
+                        </Card>
+                    )}
+                </div>
             ) : (
                 // Termo de Frequência Tab
                 <div className="space-y-4 md:space-y-6">

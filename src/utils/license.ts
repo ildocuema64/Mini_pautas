@@ -80,6 +80,7 @@ async function checkLicenseStatusDirect(escolaId: string): Promise<LicenseStatus
 
 /**
  * Fetch all licenses (SUPERADMIN only)
+ * Prefer RPC SECURITY DEFINER to avoid empty lists caused by RLS/role_cache issues.
  */
 export async function fetchAllLicenses(filters?: {
     estado?: string
@@ -87,6 +88,20 @@ export async function fetchAllLicenses(filters?: {
     escolaId?: string
 }): Promise<Licenca[]> {
     try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('listar_licencas_admin', {
+            p_estado: filters?.estado || null,
+            p_plano: filters?.plano || null,
+            p_escola_id: filters?.escolaId || null
+        })
+
+        if (!rpcError && Array.isArray(rpcData)) {
+            return rpcData as Licenca[]
+        }
+
+        if (rpcError) {
+            console.warn('listar_licencas_admin RPC unavailable, falling back to direct query:', rpcError.message)
+        }
+
         let query = supabase
             .from('licencas')
             .select('*, escolas(id, nome, codigo_escola, provincia, municipio)')
@@ -634,6 +649,16 @@ export async function requestManualSubscription(
  */
 export async function fetchPendingApprovals(): Promise<TransacaoPagamento[]> {
     try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('listar_aprovacoes_pendentes_admin')
+
+        if (!rpcError && Array.isArray(rpcData)) {
+            return rpcData as TransacaoPagamento[]
+        }
+
+        if (rpcError) {
+            console.warn('listar_aprovacoes_pendentes_admin RPC unavailable, falling back:', rpcError.message)
+        }
+
         const { data, error } = await supabase
             .from('transacoes_pagamento')
             .select('*, escolas(id, nome, codigo_escola, provincia, municipio)')
@@ -650,6 +675,22 @@ export async function fetchPendingApprovals(): Promise<TransacaoPagamento[]> {
 }
 
 /**
+ * Human-readable label for payment transaction status
+ */
+export function getTransactionStatusLabel(estado: string): string {
+    const labels: Record<string, string> = {
+        sucesso: 'Pagamento Confirmado',
+        pendente: 'Aguardando Confirmação',
+        processando: 'Em Processamento',
+        falha: 'Pagamento Falhou',
+        cancelado: 'Pagamento Cancelado',
+        reembolsado: 'Reembolsado'
+    }
+
+    return labels[estado] || estado.charAt(0).toUpperCase() + estado.slice(1)
+}
+
+/**
  * Approve a manual subscription request (SUPERADMIN only)
  */
 export async function approveManualSubscription(
@@ -658,46 +699,23 @@ export async function approveManualSubscription(
     motivo?: string
 ): Promise<{ success: boolean; licenca?: Licenca; error?: string }> {
     try {
-        // Get transaction details
-        const { data: transaction, error: transError } = await supabase
-            .from('transacoes_pagamento')
-            .select('*, escolas(id, nome)')
-            .eq('id', transactionId)
-            .single()
-
-        if (transError || !transaction) {
-            throw new Error('Transação não encontrada')
-        }
-
-        // Create license using RPC
-        const { data: licenca, error: licError } = await supabase.rpc('criar_licenca_manual', {
-            p_escola_id: transaction.escola_id,
+        const { data, error } = await supabase.rpc('aprovar_pagamento_manual', {
+            p_transacao_id: transactionId,
             p_plano: plano,
-            p_valor: transaction.valor,
-            p_motivo: motivo || `Pagamento manual aprovado - Ref: ${transaction.metadata?.reference || 'N/A'}`
+            p_motivo: motivo || null
         })
 
-        if (licError) {
-            throw licError
+        if (error) {
+            throw error
         }
 
-        // Update transaction to success and link to license
-        await supabase
-            .from('transacoes_pagamento')
-            .update({
-                estado: 'sucesso',
-                licenca_id: licenca.id,
-                updated_at: new Date().toISOString(),
-                metadata: {
-                    ...transaction.metadata,
-                    aprovado_em: new Date().toISOString()
-                }
-            })
-            .eq('id', transactionId)
+        if (!data?.success) {
+            throw new Error(data?.error || 'Erro ao aprovar assinatura')
+        }
 
         return {
             success: true,
-            licenca: licenca as Licenca
+            licenca: data.licenca as Licenca
         }
     } catch (error) {
         console.error('Error approving manual subscription:', error)
@@ -716,20 +734,15 @@ export async function rejectManualSubscription(
     motivo: string
 ): Promise<void> {
     try {
-        const { error } = await supabase
-            .from('transacoes_pagamento')
-            .update({
-                estado: 'cancelado',
-                descricao: `Rejeitado: ${motivo}`,
-                updated_at: new Date().toISOString(),
-                metadata: {
-                    rejeitado_em: new Date().toISOString(),
-                    motivo_rejeicao: motivo
-                }
-            })
-            .eq('id', transactionId)
+        const { data, error } = await supabase.rpc('rejeitar_pagamento_manual', {
+            p_transacao_id: transactionId,
+            p_motivo: motivo
+        })
 
         if (error) throw error
+        if (!data?.success) {
+            throw new Error(data?.error || 'Erro ao rejeitar solicitação')
+        }
     } catch (error) {
         console.error('Error rejecting manual subscription:', error)
         throw error

@@ -521,7 +521,12 @@ export const LicenseManagement: React.FC = () => {
                                 <div className="w-16 h-16 mx-auto mb-4 bg-neutral-100 rounded-full flex items-center justify-center">
                                     <span className="text-3xl">📋</span>
                                 </div>
-                                <p className="text-neutral-500">Nenhuma licença encontrada</p>
+                                <p className="text-neutral-700 font-medium">Nenhuma licença encontrada</p>
+                                <p className="text-neutral-500 text-sm mt-2 px-6">
+                                    {pendingApprovals.length > 0
+                                        ? `Existem ${pendingApprovals.length} solicitação(ões) pendentes acima. Após aprovar, a licença aparece nesta lista.`
+                                        : 'Pedidos de subscrição só criam licença depois da aprovação. Use "Nova Licença" para criar manualmente.'}
+                                </p>
                             </div>
                         )}
                     </div>
@@ -592,7 +597,12 @@ export const LicenseManagement: React.FC = () => {
                                 <div className="w-16 h-16 mx-auto mb-4 bg-neutral-100 rounded-full flex items-center justify-center">
                                     <span className="text-3xl">📋</span>
                                 </div>
-                                <p className="text-neutral-500">Nenhuma licença encontrada</p>
+                                <p className="text-neutral-700 font-medium">Nenhuma licença encontrada</p>
+                                <p className="text-neutral-500 text-sm mt-2">
+                                    {pendingApprovals.length > 0
+                                        ? `Existem ${pendingApprovals.length} solicitação(ões) pendentes acima. Após aprovar, a licença aparece nesta lista.`
+                                        : 'Pedidos de subscrição só criam licença depois da aprovação. Use "Nova Licença" para criar manualmente.'}
+                                </p>
                             </div>
                         )}
                     </div>

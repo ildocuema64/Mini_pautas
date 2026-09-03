@@ -6,6 +6,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabaseClient'
 import {
     checkLicenseStatus,
     fetchTransactions,
@@ -15,6 +16,7 @@ import {
     getDadosBancarios,
     requestManualSubscription,
     generateWhatsAppLink,
+    getTransactionStatusLabel,
     type SuperAdminContact,
     type DadosBancarios
 } from '../utils/license'
@@ -53,15 +55,45 @@ export const SubscriptionPage: React.FC = () => {
     const escolaCodigo = escolaProfile?.codigo_escola || ''
     const escolaNome = escolaProfile?.nome || ''
 
-    // Check for pending transaction
-    const pendingTransaction = transactions.find(t =>
-        t.provider === 'manual' &&
-        t.estado === 'pendente' &&
-        t.metadata?.tipo === 'manual_subscription_request'
+    // Check for pending/confirmed subscription payment
+    const subscriptionTransactions = transactions.filter(t =>
+        t.provider === 'manual' ||
+        t.metadata?.tipo === 'manual_subscription_request' ||
+        t.metadata?.public_payment
     )
+
+    const pendingTransaction = subscriptionTransactions.find(t => t.estado === 'pendente')
+
+    const confirmedTransaction = !pendingTransaction
+        ? subscriptionTransactions.find(t => t.estado === 'sucesso')
+        : undefined
 
     useEffect(() => {
         loadData()
+    }, [escolaId])
+
+    useEffect(() => {
+        if (!escolaId) return
+
+        const channel = supabase
+            .channel(`subscription-payments-${escolaId}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'transacoes_pagamento',
+                    filter: `escola_id=eq.${escolaId}`
+                },
+                () => {
+                    loadData()
+                }
+            )
+            .subscribe()
+
+        return () => {
+            supabase.removeChannel(channel)
+        }
     }, [escolaId])
 
     const loadData = async () => {
@@ -229,7 +261,7 @@ export const SubscriptionPage: React.FC = () => {
                             <div className="flex-1">
                                 <h3 className="font-bold text-amber-800">Aguardando Confirmação</h3>
                                 <p className="text-sm text-amber-700 mt-1">
-                                    Você tem uma solicitação pendente. Envie o comprovativo de pagamento pelo WhatsApp.
+                                    O seu pagamento foi registado e está a aguardar confirmação pelo administrador.
                                 </p>
                                 <div className="mt-3 p-3 bg-white rounded-lg border border-amber-200">
                                     <p className="text-xs text-neutral-500">Referência</p>
@@ -254,6 +286,39 @@ export const SubscriptionPage: React.FC = () => {
                                         Enviar Comprovativo
                                     </a>
                                 )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Confirmed Payment Alert */}
+                {confirmedTransaction && (
+                    <div className="bg-green-50 border-2 border-green-300 rounded-2xl p-5 animate-slide-up">
+                        <div className="flex items-start gap-3">
+                            <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                                <span className="text-2xl">✅</span>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="font-bold text-green-800">Pagamento Confirmado</h3>
+                                <p className="text-sm text-green-700 mt-1">
+                                    O administrador confirmou o seu pagamento. A licença foi activada com sucesso.
+                                </p>
+                                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="p-3 bg-white rounded-lg border border-green-200">
+                                        <p className="text-xs text-neutral-500">Referência</p>
+                                        <p className="font-mono font-bold text-neutral-800">
+                                            {confirmedTransaction.metadata?.reference || confirmedTransaction.provider_transaction_id || '-'}
+                                        </p>
+                                    </div>
+                                    <div className="p-3 bg-white rounded-lg border border-green-200">
+                                        <p className="text-xs text-neutral-500">Confirmado em</p>
+                                        <p className="font-semibold text-neutral-800">
+                                            {confirmedTransaction.metadata?.aprovado_em
+                                                ? formatDate(confirmedTransaction.metadata.aprovado_em)
+                                                : formatDate(confirmedTransaction.updated_at)}
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -774,7 +839,7 @@ const TransactionStatusBadge: React.FC<{ estado: string }> = ({ estado }) => {
     return (
         <span className={`inline-flex items-center gap-1 px-2.5 py-1 ${bg} ${text} text-xs font-semibold rounded-full`}>
             <span>{icon}</span>
-            {estado.charAt(0).toUpperCase() + estado.slice(1)}
+            {getTransactionStatusLabel(estado)}
         </span>
     )
 }

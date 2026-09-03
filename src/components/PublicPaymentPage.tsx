@@ -165,12 +165,14 @@ export const PublicPaymentPage: React.FC = () => {
                     moeda: 'AOA',
                     descricao: `Licença ${selectedPlano} - ${school.nome} (${school.codigo_escola})`,
                     metadata: {
-                        plano: selectedPlano,
-                        reference: reference,
-                        public_payment: true,
-                        data_inicio: dataInicio.toISOString().split('T')[0],
-                        data_fim: dataFim.toISOString().split('T')[0]
-                    }
+                    plano: selectedPlano,
+                    reference: reference,
+                    public_payment: true,
+                    tipo: 'manual_subscription_request',
+                    solicitado_em: new Date().toISOString(),
+                    data_inicio: dataInicio.toISOString().split('T')[0],
+                    data_fim: dataFim.toISOString().split('T')[0]
+                }
                 })
                 .select('id')
                 .single()

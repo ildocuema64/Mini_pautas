@@ -2366,3 +2366,291 @@ export async function generateBatchTermosFrequenciaZip(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MAPA DE APROVEITAMENTO
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MapaAproveitamentoDisciplinaData {
+    id: string
+    nome: string
+    inscritos_m: number
+    inscritos_f: number
+    frequentaram_m: number
+    frequentaram_f: number
+    aprovados_m: number
+    aprovados_f: number
+    reprovados_m: number
+    reprovados_f: number
+    desistentes_m: number
+    desistentes_f: number
+    transferidos_m: number
+    transferidos_f: number
+    media_turma: number | null
+}
+
+export interface MapaAproveitamentoTurmaDataPDF {
+    turma_id: string
+    turma_nome: string
+    turma_codigo: string
+    classe: string
+    nivel_ensino: string
+    disciplinas: MapaAproveitamentoDisciplinaData[]
+}
+
+export interface MapaAproveitamentoPDFData {
+    escola: {
+        nome: string
+        provincia: string
+        municipio: string
+        codigo_escola?: string
+    }
+    ano_lectivo: number
+    trimestre: number | 'anual'
+    turmas: MapaAproveitamentoTurmaDataPDF[]
+}
+
+/**
+ * Generate Mapa de Aproveitamento PDF (Angola MED format)
+ * Landscape orientation, one section per turma, columnar breakdown by M/F/T
+ */
+export async function generateMapaAproveitamentoPDF(
+    data: MapaAproveitamentoPDFData,
+    headerConfig?: HeaderConfig | null
+): Promise<void> {
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+
+    const trimLabel = data.trimestre === 'anual' ? 'Anual' : `${data.trimestre}º Trimestre`
+    const escola = headerConfig?.nome_escola || data.escola.nome
+    const provincia = headerConfig?.provincia || data.escola.provincia
+    const municipio = headerConfig?.municipio || data.escola.municipio
+
+    for (let ti = 0; ti < data.turmas.length; ti++) {
+        const turma = data.turmas[ti]
+        if (ti > 0) doc.addPage()
+
+        let y = 10
+
+        // ── Header ──────────────────────────────────────────────────────────
+        if (headerConfig?.logo_url) {
+            try {
+                const base64Image = await imageUrlToBase64(headerConfig.logo_url)
+                const imageFormat = getImageFormat(headerConfig.logo_url)
+                const lw = 18, lh = 18
+                doc.addImage(base64Image, imageFormat, (pageWidth - lw) / 2, y, lw, lh)
+                y += lh + 2
+            } catch (_) { /* skip logo on error */ }
+        }
+
+        const fSm = headerConfig?.tamanho_fonte_outros || 9
+        doc.setFontSize(fSm)
+        doc.setFont('helvetica', 'normal')
+        doc.setTextColor(0, 0, 0)
+
+        if (headerConfig?.mostrar_republica && headerConfig?.texto_republica) {
+            doc.text(headerConfig.texto_republica, pageWidth / 2, y, { align: 'center' })
+            y += fSm * 0.45
+        }
+        if (headerConfig?.mostrar_governo_provincial) {
+            doc.text(`Governo Provincial da ${provincia}`, pageWidth / 2, y, { align: 'center' })
+            y += fSm * 0.45
+        }
+        if (headerConfig?.mostrar_orgao_educacao && headerConfig?.nivel_ensino) {
+            const orgaoText = getOrgaoEducacao(headerConfig.nivel_ensino, provincia, municipio)
+            doc.text(orgaoText, pageWidth / 2, y, { align: 'center' })
+            y += fSm * 0.45
+        }
+
+        doc.setFontSize(fSm + 1)
+        doc.setFont('helvetica', 'bold')
+        doc.text(escola, pageWidth / 2, y, { align: 'center' })
+        y += (fSm + 1) * 0.55
+
+        doc.setFontSize(14)
+        doc.setFont('helvetica', 'bold')
+        doc.text('MAPA DE APROVEITAMENTO', pageWidth / 2, y, { align: 'center' })
+        y += 6
+
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'normal')
+        doc.text(
+            `Ano Lectivo: ${data.ano_lectivo}   |   Período: ${trimLabel}   |   Município: ${municipio}`,
+            pageWidth / 2, y, { align: 'center' }
+        )
+        y += 5
+
+        // ── Turma info ───────────────────────────────────────────────────────
+        doc.setFontSize(10)
+        doc.setFont('helvetica', 'bold')
+        doc.text(
+            `Turma: ${turma.turma_codigo}   |   Classe: ${turma.classe}   |   Nível: ${turma.nivel_ensino}`,
+            14, y
+        )
+        y += 5
+
+        // ── Table ────────────────────────────────────────────────────────────
+        const colGroups = ['Inscritos', 'Frequentaram', 'Aprovados', 'Reprovados', 'Desistentes', 'Transferidos']
+        const subHeaders = ['M', 'F', 'T']
+
+        // Build header arrays for autoTable
+        const head: any[][] = [
+            [
+                { content: 'Disciplinas', rowSpan: 2, styles: { valign: 'middle', halign: 'left', fontStyle: 'bold', fillColor: [15, 40, 100], textColor: 255 } },
+                ...colGroups.map(g => ({
+                    content: g,
+                    colSpan: 3,
+                    styles: { halign: 'center', fontStyle: 'bold', fillColor: [15, 40, 100], textColor: 255 }
+                })),
+                { content: 'Média', rowSpan: 2, styles: { valign: 'middle', halign: 'center', fontStyle: 'bold', fillColor: [15, 40, 100], textColor: 255 } }
+            ],
+            [
+                ...Array(6).fill(null).flatMap(() =>
+                    subHeaders.map(s => ({
+                        content: s,
+                        styles: { halign: 'center', fontStyle: 'bold', fillColor: [30, 60, 140], textColor: 255 }
+                    }))
+                )
+            ]
+        ]
+
+        // Build body rows
+        const body: any[][] = turma.disciplinas.map((disc, idx) => {
+            const insT = disc.inscritos_m + disc.inscritos_f
+            const freqT = disc.frequentaram_m + disc.frequentaram_f
+            const aprvT = disc.aprovados_m + disc.aprovados_f
+            const repT = disc.reprovados_m + disc.reprovados_f
+            const desT = disc.desistentes_m + disc.desistentes_f
+            const transT = disc.transferidos_m + disc.transferidos_f
+            const bg = idx % 2 === 0 ? [255, 255, 255] : [245, 247, 250]
+            const cellStyle = { fillColor: bg }
+
+            return [
+                { content: disc.nome, styles: { ...cellStyle, fontStyle: 'bold', halign: 'left' } },
+                // Inscritos
+                { content: disc.inscritos_m || '—', styles: cellStyle },
+                { content: disc.inscritos_f || '—', styles: cellStyle },
+                { content: insT || '—', styles: { ...cellStyle, fontStyle: 'bold' } },
+                // Frequentaram
+                { content: disc.frequentaram_m || '—', styles: cellStyle },
+                { content: disc.frequentaram_f || '—', styles: cellStyle },
+                { content: freqT || '—', styles: { ...cellStyle, fontStyle: 'bold' } },
+                // Aprovados
+                { content: disc.aprovados_m || '—', styles: { ...cellStyle, textColor: [22, 101, 52] } },
+                { content: disc.aprovados_f || '—', styles: { ...cellStyle, textColor: [22, 101, 52] } },
+                { content: aprvT || '—', styles: { ...cellStyle, fontStyle: 'bold', textColor: [22, 101, 52] } },
+                // Reprovados
+                { content: disc.reprovados_m || '—', styles: { ...cellStyle, textColor: [185, 28, 28] } },
+                { content: disc.reprovados_f || '—', styles: { ...cellStyle, textColor: [185, 28, 28] } },
+                { content: repT || '—', styles: { ...cellStyle, fontStyle: 'bold', textColor: [185, 28, 28] } },
+                // Desistentes
+                { content: disc.desistentes_m || '—', styles: { ...cellStyle, textColor: [180, 83, 9] } },
+                { content: disc.desistentes_f || '—', styles: { ...cellStyle, textColor: [180, 83, 9] } },
+                { content: desT || '—', styles: { ...cellStyle, fontStyle: 'bold', textColor: [180, 83, 9] } },
+                // Transferidos
+                { content: disc.transferidos_m || '—', styles: { ...cellStyle, textColor: [29, 78, 216] } },
+                { content: disc.transferidos_f || '—', styles: { ...cellStyle, textColor: [29, 78, 216] } },
+                { content: transT || '—', styles: { ...cellStyle, fontStyle: 'bold', textColor: [29, 78, 216] } },
+                // Média
+                { content: disc.media_turma !== null && disc.media_turma !== undefined ? disc.media_turma.toFixed(1) : '—', styles: { ...cellStyle, fontStyle: 'bold', halign: 'center' } }
+            ]
+        })
+
+        // Totals row
+        const totInsM = turma.disciplinas.reduce((s, d) => s + d.inscritos_m, 0)
+        const totInsF = turma.disciplinas.reduce((s, d) => s + d.inscritos_f, 0)
+        const totFreqM = turma.disciplinas.reduce((s, d) => s + d.frequentaram_m, 0)
+        const totFreqF = turma.disciplinas.reduce((s, d) => s + d.frequentaram_f, 0)
+        const totAprvM = turma.disciplinas.reduce((s, d) => s + d.aprovados_m, 0)
+        const totAprvF = turma.disciplinas.reduce((s, d) => s + d.aprovados_f, 0)
+        const totRepM = turma.disciplinas.reduce((s, d) => s + d.reprovados_m, 0)
+        const totRepF = turma.disciplinas.reduce((s, d) => s + d.reprovados_f, 0)
+        const totDesM = turma.disciplinas.reduce((s, d) => s + d.desistentes_m, 0)
+        const totDesF = turma.disciplinas.reduce((s, d) => s + d.desistentes_f, 0)
+        const totTransM = turma.disciplinas.reduce((s, d) => s + d.transferidos_m, 0)
+        const totTransF = turma.disciplinas.reduce((s, d) => s + d.transferidos_f, 0)
+
+        const totalFreq = totFreqM + totFreqF
+        const totalAprv = totAprvM + totAprvF
+        const taxa = totalFreq > 0 ? (totalAprv / totalFreq * 100).toFixed(1) : '0.0'
+
+        const totStyle = { fillColor: [219, 234, 254], fontStyle: 'bold' as const }
+        body.push([
+            { content: 'TOTAL', styles: { ...totStyle, halign: 'left', textColor: [15, 40, 100] } },
+            { content: totInsM, styles: totStyle },
+            { content: totInsF, styles: totStyle },
+            { content: totInsM + totInsF, styles: { ...totStyle, textColor: [15, 40, 100] } },
+            { content: totFreqM, styles: totStyle },
+            { content: totFreqF, styles: totStyle },
+            { content: totFreqM + totFreqF, styles: { ...totStyle, textColor: [15, 40, 100] } },
+            { content: totAprvM, styles: { ...totStyle, textColor: [22, 101, 52] } },
+            { content: totAprvF, styles: { ...totStyle, textColor: [22, 101, 52] } },
+            { content: totalAprv, styles: { ...totStyle, textColor: [22, 101, 52] } },
+            { content: totRepM, styles: { ...totStyle, textColor: [185, 28, 28] } },
+            { content: totRepF, styles: { ...totStyle, textColor: [185, 28, 28] } },
+            { content: totRepM + totRepF, styles: { ...totStyle, textColor: [185, 28, 28] } },
+            { content: totDesM, styles: { ...totStyle, textColor: [180, 83, 9] } },
+            { content: totDesF, styles: { ...totStyle, textColor: [180, 83, 9] } },
+            { content: totDesM + totDesF, styles: { ...totStyle, textColor: [180, 83, 9] } },
+            { content: totTransM, styles: { ...totStyle, textColor: [29, 78, 216] } },
+            { content: totTransF, styles: { ...totStyle, textColor: [29, 78, 216] } },
+            { content: totTransM + totTransF, styles: { ...totStyle, textColor: [29, 78, 216] } },
+            { content: `${taxa}%`, styles: { ...totStyle, textColor: [15, 40, 100] } }
+        ])
+
+        autoTable(doc, {
+            head,
+            body,
+            startY: y,
+            margin: { left: 8, right: 8 },
+            tableWidth: pageWidth - 16,
+            styles: {
+                fontSize: 7.5,
+                cellPadding: 1.5,
+                halign: 'center',
+                valign: 'middle',
+                lineWidth: 0.3,
+                lineColor: [180, 180, 180]
+            },
+            columnStyles: {
+                0: { halign: 'left', cellWidth: 42 },
+                3: { fontStyle: 'bold' }, 6: { fontStyle: 'bold' },
+                9: { fontStyle: 'bold' }, 12: { fontStyle: 'bold' },
+                15: { fontStyle: 'bold' }, 18: { fontStyle: 'bold' },
+                19: { halign: 'center', fontStyle: 'bold', cellWidth: 14 }
+            },
+            didDrawPage: () => {
+                // Footer on each page
+                doc.setFontSize(7)
+                doc.setFont('helvetica', 'normal')
+                doc.setTextColor(120, 120, 120)
+                doc.text(
+                    `M=Masculino  F=Feminino  T=Total  |  Gerado em: ${new Date().toLocaleDateString('pt-PT')}`,
+                    pageWidth / 2, pageHeight - 6, { align: 'center' }
+                )
+                const pg = (doc as any).internal.getCurrentPageInfo().pageNumber
+                const total = (doc as any).internal.getNumberOfPages()
+                doc.text(`Pág. ${pg}/${total}`, pageWidth - 14, pageHeight - 6, { align: 'right' })
+                doc.setTextColor(0, 0, 0)
+            }
+        })
+    }
+
+    // ── Signature block (last page) ──────────────────────────────────────────
+    const finalY = (doc as any).lastAutoTable?.finalY || pageHeight - 50
+    if (finalY + 30 < pageHeight - 15) {
+        const sigY = finalY + 10
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'normal')
+        doc.text('O(A) Director(a) da Escola', 40, sigY + 12, { align: 'center' })
+        doc.line(14, sigY + 10, 66, sigY + 10)
+        doc.text('O(A) Responsável Pedagógico(a)', pageWidth / 2, sigY + 12, { align: 'center' })
+        doc.line(pageWidth / 2 - 35, sigY + 10, pageWidth / 2 + 35, sigY + 10)
+        doc.text('O(A) Delegado(a) Municipal de Educação', pageWidth - 40, sigY + 12, { align: 'center' })
+        doc.line(pageWidth - 70, sigY + 10, pageWidth - 14, sigY + 10)
+    }
+
+    const filename = `mapa_aproveitamento_${data.ano_lectivo}_${data.trimestre === 'anual' ? 'anual' : `T${data.trimestre}`}.pdf`
+    doc.save(filename)
+}
+
